@@ -12,6 +12,54 @@ export interface Product {
   taxRateBps: number;
   stock: number;
   active: boolean;
+  rewardEligible?: boolean;
+}
+
+export type LoyaltyTier = "member" | "silver" | "gold" | "platinum";
+
+export interface LoyaltySnapshot {
+  customerMobile: string;
+  points: number;
+  visits: number;
+  tier: LoyaltyTier;
+  freeDrinksAvailable: number;
+}
+
+export function normalizeSaudiMobile(input: string): string {
+  const arabicDigits = "٠١٢٣٤٥٦٧٨٩";
+  const easternDigits = "۰۱۲۳۴۵۶۷۸۹";
+  const ascii = input
+    .replace(/[٠-٩]/g, (digit) => String(arabicDigits.indexOf(digit)))
+    .replace(/[۰-۹]/g, (digit) => String(easternDigits.indexOf(digit)));
+  const digits = ascii.replace(/\D/g, "");
+  if (/^05\d{8}$/.test(digits)) return `+966${digits.slice(1)}`;
+  if (/^5\d{8}$/.test(digits)) return `+966${digits}`;
+  if (/^9665\d{8}$/.test(digits)) return `+${digits}`;
+  throw new Error("Invalid Saudi mobile number");
+}
+
+export const FREE_DRINK_POINTS = 100;
+
+const loyaltyTiers: Array<{ tier: LoyaltyTier; minimumVisits: number; multiplierBps: number }> = [
+  { tier: "platinum", minimumVisits: 30, multiplierBps: 15_000 },
+  { tier: "gold", minimumVisits: 15, multiplierBps: 12_500 },
+  { tier: "silver", minimumVisits: 5, multiplierBps: 11_000 },
+  { tier: "member", minimumVisits: 0, multiplierBps: 10_000 }
+];
+
+export function loyaltyTierForVisits(visits: number): LoyaltyTier {
+  integer(visits, "visits");
+  if (visits < 0) throw new Error("visits must be non-negative");
+  return loyaltyTiers.find((entry) => visits >= entry.minimumVisits)!.tier;
+}
+
+export function calculateLoyaltyPoints(taxableHalalas: Money, tier: LoyaltyTier): number {
+  integer(taxableHalalas, "taxableHalalas");
+  if (taxableHalalas < 0) throw new Error("taxableHalalas must be non-negative");
+  const multiplier = loyaltyTiers.find((entry) => entry.tier === tier)?.multiplierBps;
+  if (!multiplier) throw new Error("Unknown loyalty tier");
+  const basePoints = Math.floor(taxableHalalas / 100);
+  return Math.floor((basePoints * multiplier) / 10_000);
 }
 
 export interface CartLine {
@@ -59,4 +107,3 @@ export function calculateTotals(lines: CartLine[]): Totals {
 
 export const formatSar = (halalas: Money, locale = "ar-SA") =>
   new Intl.NumberFormat(locale, { style: "currency", currency: "SAR" }).format(halalas / 100);
-

@@ -2,12 +2,14 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
-import { calculateTotals } from "@cooffeup/shared";
+import { calculateLoyaltyPoints, calculateTotals, FREE_DRINK_POINTS, normalizeSaudiMobile } from "@cooffeup/shared";
 import { z } from "zod";
-import { idempotency, nextReceipt, orders, products, type StoredOrder } from "./store.js";
+import { getOrCreateLoyaltyAccount, idempotency, loyaltyLedger, loyaltySnapshot, nextReceipt, orders, products, refreshLoyaltyTier, type StoredOrder } from "./store.js";
 
 const orderSchema = z.object({
   type: z.enum(["dine_in", "takeaway", "delivery"]),
+  customerMobile: z.string().trim().min(9).max(24).optional(),
+  redeemReward: z.enum(["free_drink"]).optional(),
   lines: z.array(z.object({productId:z.string().min(1),quantity:z.number().int().positive().max(99),discount:z.number().int().nonnegative().optional(),notes:z.string().max(250).optional()})).min(1).max(100),
   payments: z.array(z.object({method:z.enum(["cash","card","mada","apple_pay","stc_pay"]),amount:z.number().int().positive()})).min(1).max(5)
 });
@@ -21,6 +23,11 @@ export async function buildApp() {
   app.get("/health", async () => ({ok:true,service:"cooffeup-api",time:new Date().toISOString()}));
   app.get("/api/v1/products", async () => ({data:[...products.values()].filter((p) => p.active)}));
   app.get("/api/v1/orders", async () => ({data:[...orders.values()].slice(-50).reverse()}));
+  app.get("/api/v1/customers/:mobile/loyalty", async (request, reply) => {
+    const { mobile } = z.object({mobile:z.string().trim().min(9).max(24)}).parse(request.params);
+    try { return {data:loyaltySnapshot(getOrCreateLoyaltyAccount(normalizeSaudiMobile(mobile)))}; }
+    catch { return reply.code(422).send({error:"INVALID_SAUDI_MOBILE"}); }
+  });
 
   app.post("/api/v1/orders", async (request, reply) => {
     const key = request.headers["idempotency-key"];
@@ -37,15 +44,41 @@ export async function buildApp() {
       if (product.stock < input.quantity) return reply.code(409).send({error:"INSUFFICIENT_STOCK",productId:product.id,available:product.stock});
       cart.push({productId:product.id,name:product.nameAr,unitPrice:product.price,quantity:input.quantity,taxRateBps:product.taxRateBps,discount:input.discount,notes:input.notes});
     }
+    let account;
+    try { account = parsed.data.customerMobile ? getOrCreateLoyaltyAccount(normalizeSaudiMobile(parsed.data.customerMobile)) : undefined; }
+    catch { return reply.code(422).send({error:"INVALID_SAUDI_MOBILE"}); }
+    if (parsed.data.redeemReward && !account) return reply.code(422).send({error:"CUSTOMER_REQUIRED_FOR_REWARD"});
+    if (parsed.data.redeemReward === "free_drink") {
+      if (account!.points < FREE_DRINK_POINTS) return reply.code(409).send({error:"INSUFFICIENT_LOYALTY_POINTS",required:FREE_DRINK_POINTS,available:account!.points});
+      const eligible = cart
+        .filter((line) => products.get(line.productId)?.rewardEligible)
+        .sort((a,b) => b.unitPrice-a.unitPrice)[0];
+      if (!eligible) return reply.code(422).send({error:"NO_REWARD_ELIGIBLE_DRINK"});
+      eligible.discount = (eligible.discount ?? 0) + eligible.unitPrice;
+    }
     const totals = calculateTotals(cart);
     const paid = parsed.data.payments.reduce((sum, payment) => sum + payment.amount, 0);
     if (paid < totals.total) return reply.code(422).send({error:"PAYMENT_SHORT",due:totals.total-paid});
 
     for (const line of cart) products.get(line.productId)!.stock -= line.quantity;
+    const orderId = crypto.randomUUID();
+    if (account && parsed.data.redeemReward === "free_drink") {
+      account.points -= FREE_DRINK_POINTS;
+      loyaltyLedger.push({id:crypto.randomUUID(),customerMobile:account.customerMobile,orderId,type:"redeem",points:-FREE_DRINK_POINTS,createdAt:new Date().toISOString()});
+    }
+    if (account) {
+      account.visits += 1;
+      refreshLoyaltyTier(account);
+      const earned = calculateLoyaltyPoints(totals.taxable, account.tier);
+      account.points += earned;
+      account.updatedAt = new Date().toISOString();
+      loyaltyLedger.push({id:crypto.randomUUID(),customerMobile:account.customerMobile,orderId,type:"earn",points:earned,createdAt:new Date().toISOString()});
+    }
     const order: StoredOrder = {
-      id:crypto.randomUUID(), receiptNumber:nextReceipt(), type:parsed.data.type, status:"paid",
+      id:orderId, receiptNumber:nextReceipt(), type:parsed.data.type, status:"paid",
       lines:cart.map(({productId,quantity,unitPrice,name}) => ({productId,quantity,unitPrice,name})),
-      payments:parsed.data.payments, totals, createdAt:new Date().toISOString()
+      payments:parsed.data.payments, totals, customerMobile:account?.customerMobile,
+      loyalty:account ? loyaltySnapshot(account) : undefined, createdAt:new Date().toISOString()
     };
     orders.set(order.id, order);
     idempotency.set(key, order);
