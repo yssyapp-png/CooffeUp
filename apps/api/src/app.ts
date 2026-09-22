@@ -5,8 +5,10 @@ import rateLimit from "@fastify/rate-limit";
 import { calculateLoyaltyPoints, calculateTotals, FREE_DRINK_POINTS, normalizeSaudiMobile } from "@cooffeup/shared";
 import { z } from "zod";
 import { getOrCreateLoyaltyAccount, idempotency, loyaltyLedger, loyaltySnapshot, nextReceipt, orders, products, refreshLoyaltyTier, type StoredOrder } from "./store.js";
+import { registerOperationsRoutes } from "./operations-routes.js";
 
 const orderSchema = z.object({
+  shiftId: z.string().uuid().optional(),
   type: z.enum(["dine_in", "takeaway", "delivery"]),
   customerMobile: z.string().trim().min(9).max(24).optional(),
   redeemReward: z.enum(["free_drink"]).optional(),
@@ -28,6 +30,8 @@ export async function buildApp() {
     try { return {data:loyaltySnapshot(getOrCreateLoyaltyAccount(normalizeSaudiMobile(mobile)))}; }
     catch { return reply.code(422).send({error:"INVALID_SAUDI_MOBILE"}); }
   });
+
+  await registerOperationsRoutes(app);
 
   app.post("/api/v1/orders", async (request, reply) => {
     const key = request.headers["idempotency-key"];
@@ -75,7 +79,7 @@ export async function buildApp() {
       loyaltyLedger.push({id:crypto.randomUUID(),customerMobile:account.customerMobile,orderId,type:"earn",points:earned,createdAt:new Date().toISOString()});
     }
     const order: StoredOrder = {
-      id:orderId, receiptNumber:nextReceipt(), type:parsed.data.type, status:"paid",
+      id:orderId, receiptNumber:nextReceipt(), type:parsed.data.type, status:"paid", shiftId:parsed.data.shiftId,
       lines:cart.map(({productId,quantity,unitPrice,name}) => ({productId,quantity,unitPrice,name})),
       payments:parsed.data.payments, totals, customerMobile:account?.customerMobile,
       loyalty:account ? loyaltySnapshot(account) : undefined, createdAt:new Date().toISOString()

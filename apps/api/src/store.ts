@@ -5,6 +5,7 @@ export interface StoredOrder {
   receiptNumber: string;
   type: OrderType;
   status: "paid";
+  shiftId?: string;
   lines: Array<{ productId: string; quantity: number; unitPrice: number; name: string }>;
   payments: Array<{ method: PaymentMethod; amount: number }>;
   totals: Totals;
