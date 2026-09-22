@@ -34,9 +34,10 @@ const suspendedOrderSchema = z.object({
   note: z.string().trim().max(250).optional(),
   suspendedBy: identity
 });
-const refundSchema = z.object({ amount: money.positive(), method: z.enum(["cash", "card", "mada", "apple_pay", "stc_pay"]), reason });
+const refundSchema = z.object({ shiftId: z.string().uuid(), amount: money.positive(), method: z.enum(["cash", "card", "mada", "apple_pay", "stc_pay"]), reason });
 
 function managerIdentity(request: FastifyRequest) {
+  if (process.env.NODE_ENV === "production" && process.env.ALLOW_LEGACY_MANAGER_APPROVAL !== "true") return null;
   const configuredToken = process.env.MANAGER_APPROVAL_TOKEN;
   const token = request.headers["x-manager-approval-token"];
   const actorId = request.headers["x-actor-id"];
@@ -45,7 +46,26 @@ function managerIdentity(request: FastifyRequest) {
   return actorId.trim();
 }
 
+const cashSalesForShift = (shiftId: string) => [...orders.values()]
+  .filter((order) => order.shiftId === shiftId)
+  .flatMap((order) => order.payments)
+  .filter((payment) => payment.method === "cash")
+  .reduce((sum, payment) => sum + payment.amount, 0);
+
+const cashRefundsForShift = (shiftId: string) => [...refunds.values()]
+  .filter((refund) => refund.shiftId === shiftId && refund.method === "cash")
+  .reduce((sum, refund) => sum + refund.amount, 0);
+
 export async function registerOperationsRoutes(app: FastifyInstance) {
+  app.get("/api/v1/operations/readiness", async () => ({
+    data: {
+      productionReady: false,
+      persistence: "memory",
+      managerApproval: "legacy-token",
+      blockers: ["PERSISTENT_DATABASE_REQUIRED", "AUTHENTICATED_EMPLOYEE_SESSIONS_REQUIRED"]
+    }
+  }));
+
   app.get("/api/v1/shifts", async () => ({ data: [...shifts.values()].slice(-50).reverse() }));
 
   app.post("/api/v1/shifts/open", async (request, reply) => {
@@ -65,6 +85,10 @@ export async function registerOperationsRoutes(app: FastifyInstance) {
     const shift = shifts.get(shiftId.data);
     if (!shift) return reply.code(404).send({ error: "SHIFT_NOT_FOUND" });
     if (shift.status !== "open") return reply.code(409).send({ error: "SHIFT_CLOSED" });
+    if (parsed.data.type === "cash_out") {
+      const availableCash = expectedCashForShift(shift, cashSalesForShift(shift.id), cashRefundsForShift(shift.id));
+      if (parsed.data.amount > availableCash) return reply.code(409).send({ error: "INSUFFICIENT_CASH_IN_DRAWER", available: availableCash });
+    }
     const movement: CashMovement = { id: crypto.randomUUID(), shiftId: shift.id, ...parsed.data, createdAt: new Date().toISOString() };
     cashMovements.set(movement.id, movement);
     return reply.code(201).send({ data: movement });
@@ -77,12 +101,7 @@ export async function registerOperationsRoutes(app: FastifyInstance) {
     const shift = shifts.get(shiftId.data);
     if (!shift) return reply.code(404).send({ error: "SHIFT_NOT_FOUND" });
     if (shift.status !== "open") return reply.code(409).send({ error: "SHIFT_ALREADY_CLOSED" });
-    const cashSales = [...orders.values()]
-      .filter((order) => order.shiftId === shift.id)
-      .flatMap((order) => order.payments)
-      .filter((payment) => payment.method === "cash")
-      .reduce((sum, payment) => sum + payment.amount, 0);
-    const expectedCash = expectedCashForShift(shift, cashSales);
+    const expectedCash = expectedCashForShift(shift, cashSalesForShift(shift.id), cashRefundsForShift(shift.id));
     Object.assign(shift, { status: "closed" as const, closedAt: new Date().toISOString(), expectedCash, countedCash: parsed.data.countedCash, variance: parsed.data.countedCash - expectedCash });
     return reply.send({ data: shift });
   });
@@ -106,6 +125,9 @@ export async function registerOperationsRoutes(app: FastifyInstance) {
     const suspended = suspendedOrders.get(orderId.data);
     if (!suspended) return reply.code(404).send({ error: "SUSPENDED_ORDER_NOT_FOUND" });
     if (suspended.resumedAt) return reply.code(409).send({ error: "SUSPENDED_ORDER_ALREADY_RESUMED" });
+    const shift = shifts.get(suspended.shiftId);
+    if (!shift) return reply.code(404).send({ error: "SHIFT_NOT_FOUND" });
+    if (shift.status !== "open") return reply.code(409).send({ error: "SHIFT_CLOSED" });
     suspended.resumedAt = new Date().toISOString();
     return reply.send({ data: suspended });
   });
@@ -118,6 +140,9 @@ export async function registerOperationsRoutes(app: FastifyInstance) {
     if (!orderId.success || !parsed.success) return reply.code(422).send({ error: "INVALID_REFUND" });
     const order = orders.get(orderId.data);
     if (!order) return reply.code(404).send({ error: "ORDER_NOT_FOUND" });
+    const shift = shifts.get(parsed.data.shiftId);
+    if (!shift) return reply.code(404).send({ error: "SHIFT_NOT_FOUND" });
+    if (shift.status !== "open") return reply.code(409).send({ error: "SHIFT_CLOSED" });
     const remaining = order.totals.total - refundedAmount(order.id);
     if (parsed.data.amount > remaining) return reply.code(409).send({ error: "REFUND_EXCEEDS_REMAINING", remaining });
     const refund: Refund = { id: crypto.randomUUID(), orderId: order.id, ...parsed.data, approvedBy, createdAt: new Date().toISOString() };

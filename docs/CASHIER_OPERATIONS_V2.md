@@ -8,12 +8,19 @@ This increment adds non-breaking operational APIs for café cashiers. Existing c
 - Opening float, cash-in/cash-out movements, expected close cash, counted cash, and variance.
 - Suspended carts with one-time resume protection.
 - Partial refunds with cumulative over-refund protection.
+- Cash refunds are tied to an open shift and reduce expected drawer cash.
+- Cash withdrawals cannot exceed the calculated drawer balance.
+- Suspended orders cannot be resumed after their shift closes.
 - Manager-only refund approval using server-side configuration.
 
 ## Security
 
 Set `MANAGER_APPROVAL_TOKEN` to a long random secret in the API environment. Do not place it in web or mobile source code. The current token adapter is an integration seam and should be replaced by authenticated employee sessions and permission claims before production use.
 
+The legacy approval adapter is blocked in `NODE_ENV=production` unless `ALLOW_LEGACY_MANAGER_APPROVAL=true` is explicitly set. This override is for controlled migration only and must not be enabled for real operation.
+
 ## Compatibility
 
 The database remains in-memory in this foundation. The maps in `operations.ts` are intentionally isolated so they can be replaced with transactional PostgreSQL repositories without changing the HTTP contracts.
+
+`GET /api/v1/operations/readiness` deliberately reports `productionReady: false` until persistent storage and authenticated employee sessions replace the temporary adapters.

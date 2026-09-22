@@ -39,6 +39,7 @@ export interface SuspendedOrder {
 export interface Refund {
   id: string;
   orderId: string;
+  shiftId: string;
   amount: number;
   method: PaymentMethod;
   reason: string;
@@ -57,9 +58,9 @@ export const activeShiftForCashier = (cashierId: string) =>
 export const refundedAmount = (orderId: string) =>
   [...refunds.values()].filter((refund) => refund.orderId === orderId).reduce((sum, refund) => sum + refund.amount, 0);
 
-export const expectedCashForShift = (shift: Shift, cashSales: number) => {
+export const expectedCashForShift = (shift: Shift, cashSales: number, cashRefunds = 0) => {
   const movementTotal = [...cashMovements.values()]
     .filter((movement) => movement.shiftId === shift.id)
     .reduce((sum, movement) => sum + (movement.type === "cash_in" ? movement.amount : -movement.amount), 0);
-  return shift.openingFloat + cashSales + movementTotal;
+  return shift.openingFloat + cashSales - cashRefunds + movementTotal;
 };
