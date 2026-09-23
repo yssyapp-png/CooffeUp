@@ -1,15 +1,17 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { buildApp } from "./app.js";
 import { cashMovements, refunds, shifts, suspendedOrders } from "./operations.js";
-import { idempotency, orders } from "./store.js";
+import { idempotency, loyaltyAccounts, loyaltyLedger, orders, products } from "./store.js";
 
 process.env.NODE_ENV = "test";
 process.env.MANAGER_APPROVAL_TOKEN = "test-manager-token";
 const app = await buildApp();
+const initialStocks = new Map([...products].map(([id, product]) => [id, product.stock]));
 beforeAll(() => app.ready());
 afterAll(() => app.close());
 beforeEach(() => {
-  shifts.clear(); cashMovements.clear(); suspendedOrders.clear(); refunds.clear(); orders.clear(); idempotency.clear();
+  shifts.clear(); cashMovements.clear(); suspendedOrders.clear(); refunds.clear(); orders.clear(); idempotency.clear(); loyaltyAccounts.clear(); loyaltyLedger.length = 0;
+  for (const [id, stock] of initialStocks) products.get(id)!.stock = stock;
 });
 
 async function openShift() {
@@ -59,27 +61,60 @@ describe("cashier operations", () => {
     expect(result.json().error).toBe("SHIFT_CLOSED");
   });
 
-  it("requires manager approval and prevents over-refunds", async () => {
+  it("requires manager approval and prevents refunding an item twice", async () => {
     const shift = (await openShift()).json().data;
     const sale = await app.inject({ method: "POST", url: "/api/v1/orders", headers: { "idempotency-key": "refund-sale-001" }, payload: { shiftId: shift.id, type: "takeaway", lines: [{ productId: "espresso", quantity: 1 }], payments: [{ method: "mada", amount: 1_380 }] } });
     const orderId = sale.json().data.id;
-    const denied = await app.inject({ method: "POST", url: `/api/v1/orders/${orderId}/refunds`, payload: { shiftId: shift.id, amount: 500, method: "mada", reason: "طلب العميل" } });
+    const denied = await app.inject({ method: "POST", url: `/api/v1/orders/${orderId}/refunds`, payload: { shiftId: shift.id, method: "mada", lines: [{ productId: "espresso", quantity: 1 }], reason: "طلب العميل" } });
     expect(denied.statusCode).toBe(403);
     const headers = { "x-manager-approval-token": "test-manager-token", "x-actor-id": "manager-1", "x-actor-role": "manager" };
-    expect((await app.inject({ method: "POST", url: `/api/v1/orders/${orderId}/refunds`, headers, payload: { shiftId: shift.id, amount: 500, method: "mada", reason: "طلب العميل" } })).statusCode).toBe(201);
-    const tooMuch = await app.inject({ method: "POST", url: `/api/v1/orders/${orderId}/refunds`, headers, payload: { shiftId: shift.id, amount: 900, method: "mada", reason: "طلب العميل" } });
+    expect((await app.inject({ method: "POST", url: `/api/v1/orders/${orderId}/refunds`, headers, payload: { shiftId: shift.id, method: "mada", lines: [{ productId: "espresso", quantity: 1 }], reason: "طلب العميل" } })).statusCode).toBe(201);
+    const tooMuch = await app.inject({ method: "POST", url: `/api/v1/orders/${orderId}/refunds`, headers, payload: { shiftId: shift.id, method: "mada", lines: [{ productId: "espresso", quantity: 1 }], reason: "طلب العميل" } });
     expect(tooMuch.statusCode).toBe(409);
-    expect(tooMuch.json().remaining).toBe(880);
+    expect(tooMuch.json().error).toBe("REFUND_QUANTITY_EXCEEDS_REMAINING");
   });
 
   it("subtracts cash refunds from expected cash at shift close", async () => {
     const shift = (await openShift()).json().data;
-    const sale = await app.inject({ method: "POST", url: "/api/v1/orders", headers: { "idempotency-key": "cash-refund-sale-001" }, payload: { shiftId: shift.id, type: "takeaway", lines: [{ productId: "espresso", quantity: 1 }], payments: [{ method: "cash", amount: 1_380 }] } });
+    const sale = await app.inject({ method: "POST", url: "/api/v1/orders", headers: { "idempotency-key": "cash-refund-sale-001" }, payload: { shiftId: shift.id, type: "takeaway", lines: [{ productId: "espresso", quantity: 2 }], payments: [{ method: "cash", amount: 2_760 }] } });
     const headers = { "x-manager-approval-token": "test-manager-token", "x-actor-id": "manager-1", "x-actor-role": "manager" };
-    const refund = await app.inject({ method: "POST", url: `/api/v1/orders/${sale.json().data.id}/refunds`, headers, payload: { shiftId: shift.id, amount: 500, method: "cash", reason: "طلب العميل" } });
+    const refund = await app.inject({ method: "POST", url: `/api/v1/orders/${sale.json().data.id}/refunds`, headers, payload: { shiftId: shift.id, method: "cash", lines: [{ productId: "espresso", quantity: 1 }], reason: "طلب العميل" } });
     expect(refund.statusCode).toBe(201);
-    const close = await app.inject({ method: "POST", url: `/api/v1/shifts/${shift.id}/close`, payload: { countedCash: 50_880 } });
-    expect(close.json().data.expectedCash).toBe(50_880);
+    const close = await app.inject({ method: "POST", url: `/api/v1/shifts/${shift.id}/close`, payload: { countedCash: 51_380 } });
+    expect(close.json().data.expectedCash).toBe(51_380);
     expect(close.json().data.variance).toBe(0);
+  });
+
+  it("subtracts customer change from cash sales", async () => {
+    const shift = (await openShift()).json().data;
+    const sale = await app.inject({ method: "POST", url: "/api/v1/orders", headers: { "idempotency-key": "cash-change-sale-001" }, payload: { shiftId: shift.id, type: "takeaway", lines: [{ productId: "latte", quantity: 1 }], payments: [{ method: "cash", amount: 5_000 }] } });
+    expect(sale.json().data.change).toBe(2_930);
+    const close = await app.inject({ method: "POST", url: `/api/v1/shifts/${shift.id}/close`, payload: { countedCash: 52_070 } });
+    expect(close.json().data.expectedCash).toBe(52_070);
+    expect(close.json().data.variance).toBe(0);
+  });
+
+  it("does not refund a card payment from the cash drawer", async () => {
+    const shift = (await openShift()).json().data;
+    const sale = await app.inject({ method: "POST", url: "/api/v1/orders", headers: { "idempotency-key": "method-match-sale-001" }, payload: { shiftId: shift.id, type: "takeaway", lines: [{ productId: "espresso", quantity: 1 }], payments: [{ method: "mada", amount: 1_380 }] } });
+    const headers = { "x-manager-approval-token": "test-manager-token", "x-actor-id": "manager-1", "x-actor-role": "manager" };
+    const refund = await app.inject({ method: "POST", url: `/api/v1/orders/${sale.json().data.id}/refunds`, headers, payload: { shiftId: shift.id, method: "cash", lines: [{ productId: "espresso", quantity: 1 }], reason: "طلب العميل" } });
+    expect(refund.statusCode).toBe(409);
+    expect(refund.json()).toEqual({ error: "REFUND_METHOD_MISMATCH", available: 0 });
+  });
+
+  it("restores stock and reverses earned loyalty points", async () => {
+    const shift = (await openShift()).json().data;
+    const stockBefore = products.get("latte")!.stock;
+    const sale = await app.inject({ method: "POST", url: "/api/v1/orders", headers: { "idempotency-key": "loyalty-refund-sale-001" }, payload: { shiftId: shift.id, type: "takeaway", customerMobile: "0551234567", lines: [{ productId: "latte", quantity: 1 }], payments: [{ method: "mada", amount: 2_070 }] } });
+    const account = loyaltyAccounts.get("+966551234567")!;
+    expect(account.points).toBe(18);
+    expect(products.get("latte")!.stock).toBe(stockBefore - 1);
+    const headers = { "x-manager-approval-token": "test-manager-token", "x-actor-id": "manager-1", "x-actor-role": "manager" };
+    const refund = await app.inject({ method: "POST", url: `/api/v1/orders/${sale.json().data.id}/refunds`, headers, payload: { shiftId: shift.id, method: "mada", lines: [{ productId: "latte", quantity: 1 }], reason: "طلب العميل" } });
+    expect(refund.statusCode).toBe(201);
+    expect(products.get("latte")!.stock).toBe(stockBefore);
+    expect(account.points).toBe(0);
+    expect(account.visits).toBe(0);
   });
 });

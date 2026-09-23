@@ -42,6 +42,7 @@ export interface Refund {
   shiftId: string;
   amount: number;
   method: PaymentMethod;
+  lines: Array<{ productId: string; quantity: number }>;
   reason: string;
   approvedBy: string;
   createdAt: string;
@@ -57,6 +58,13 @@ export const activeShiftForCashier = (cashierId: string) =>
 
 export const refundedAmount = (orderId: string) =>
   [...refunds.values()].filter((refund) => refund.orderId === orderId).reduce((sum, refund) => sum + refund.amount, 0);
+
+export const refundedQuantity = (orderId: string, productId: string) =>
+  [...refunds.values()]
+    .filter((refund) => refund.orderId === orderId)
+    .flatMap((refund) => refund.lines)
+    .filter((line) => line.productId === productId)
+    .reduce((sum, line) => sum + line.quantity, 0);
 
 export const expectedCashForShift = (shift: Shift, cashSales: number, cashRefunds = 0) => {
   const movementTotal = [...cashMovements.values()]

@@ -6,9 +6,11 @@ import { calculateLoyaltyPoints, calculateTotals, FREE_DRINK_POINTS, normalizeSa
 import { z } from "zod";
 import { getOrCreateLoyaltyAccount, idempotency, loyaltyLedger, loyaltySnapshot, nextReceipt, orders, products, refreshLoyaltyTier, type StoredOrder } from "./store.js";
 import { registerOperationsRoutes } from "./operations-routes.js";
+import { managerIdentity } from "./manager-approval.js";
+import { shifts } from "./operations.js";
 
 const orderSchema = z.object({
-  shiftId: z.string().uuid().optional(),
+  shiftId: z.string().uuid(),
   type: z.enum(["dine_in", "takeaway", "delivery"]),
   customerMobile: z.string().trim().min(9).max(24).optional(),
   redeemReward: z.enum(["free_drink"]).optional(),
@@ -40,6 +42,12 @@ export async function buildApp() {
     if (existing) return reply.code(200).send({data:existing,replayed:true});
     const parsed = orderSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(422).send({error:"INVALID_ORDER",issues:parsed.error.issues});
+    const shift = shifts.get(parsed.data.shiftId);
+    if (!shift) return reply.code(404).send({error:"SHIFT_NOT_FOUND"});
+    if (shift.status !== "open") return reply.code(409).send({error:"SHIFT_CLOSED"});
+    const hasManualDiscount = parsed.data.lines.some((line) => (line.discount ?? 0) > 0);
+    const discountApprovedBy = hasManualDiscount ? managerIdentity(request) ?? undefined : undefined;
+    if (hasManualDiscount && !discountApprovedBy) return reply.code(403).send({error:"MANAGER_APPROVAL_REQUIRED_FOR_DISCOUNT"});
 
     const cart = [];
     for (const input of parsed.data.lines) {
@@ -63,6 +71,9 @@ export async function buildApp() {
     const totals = calculateTotals(cart);
     const paid = parsed.data.payments.reduce((sum, payment) => sum + payment.amount, 0);
     if (paid < totals.total) return reply.code(422).send({error:"PAYMENT_SHORT",due:totals.total-paid});
+    const change = paid - totals.total;
+    const cashTendered = parsed.data.payments.filter((payment) => payment.method === "cash").reduce((sum, payment) => sum + payment.amount, 0);
+    if (change > cashTendered) return reply.code(422).send({error:"NON_CASH_OVERPAYMENT"});
 
     for (const line of cart) products.get(line.productId)!.stock -= line.quantity;
     const orderId = crypto.randomUUID();
@@ -80,13 +91,13 @@ export async function buildApp() {
     }
     const order: StoredOrder = {
       id:orderId, receiptNumber:nextReceipt(), type:parsed.data.type, status:"paid", shiftId:parsed.data.shiftId,
-      lines:cart.map(({productId,quantity,unitPrice,name}) => ({productId,quantity,unitPrice,name})),
-      payments:parsed.data.payments, totals, customerMobile:account?.customerMobile,
+      lines:cart.map(({productId,quantity,unitPrice,name,taxRateBps,discount}) => ({productId,quantity,unitPrice,name,taxRateBps,discount:discount ?? 0})),
+      payments:parsed.data.payments, change, discountApprovedBy, totals, customerMobile:account?.customerMobile,
       loyalty:account ? loyaltySnapshot(account) : undefined, createdAt:new Date().toISOString()
     };
     orders.set(order.id, order);
     idempotency.set(key, order);
-    return reply.code(201).send({data:order,change:paid-totals.total});
+    return reply.code(201).send({data:order,change});
   });
   return app;
 }

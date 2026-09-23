@@ -5,9 +5,11 @@ export interface StoredOrder {
   receiptNumber: string;
   type: OrderType;
   status: "paid";
-  shiftId?: string;
-  lines: Array<{ productId: string; quantity: number; unitPrice: number; name: string }>;
+  shiftId: string;
+  lines: Array<{ productId: string; quantity: number; unitPrice: number; name: string; taxRateBps: number; discount: number }>;
   payments: Array<{ method: PaymentMethod; amount: number }>;
+  change: number;
+  discountApprovedBy?: string;
   totals: Totals;
   customerMobile?: string;
   loyalty?: LoyaltySnapshot;
@@ -26,7 +28,7 @@ export interface LoyaltyLedgerEntry {
   id: string;
   customerMobile: string;
   orderId: string;
-  type: "earn" | "redeem";
+  type: "earn" | "redeem" | "refund_earn_reversal" | "refund_redeem_restore";
   points: number;
   createdAt: string;
 }

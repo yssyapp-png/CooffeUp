@@ -1,11 +1,14 @@
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { orders } from "./store.js";
+import { calculateTotals } from "@cooffeup/shared";
+import { loyaltyAccounts, loyaltyLedger, orders, products, refreshLoyaltyTier } from "./store.js";
+import { managerIdentity } from "./manager-approval.js";
 import {
   activeShiftForCashier,
   cashMovements,
   expectedCashForShift,
   refundedAmount,
+  refundedQuantity,
   refunds,
   shifts,
   suspendedOrders,
@@ -34,23 +37,20 @@ const suspendedOrderSchema = z.object({
   note: z.string().trim().max(250).optional(),
   suspendedBy: identity
 });
-const refundSchema = z.object({ shiftId: z.string().uuid(), amount: money.positive(), method: z.enum(["cash", "card", "mada", "apple_pay", "stc_pay"]), reason });
-
-function managerIdentity(request: FastifyRequest) {
-  if (process.env.NODE_ENV === "production" && process.env.ALLOW_LEGACY_MANAGER_APPROVAL !== "true") return null;
-  const configuredToken = process.env.MANAGER_APPROVAL_TOKEN;
-  const token = request.headers["x-manager-approval-token"];
-  const actorId = request.headers["x-actor-id"];
-  const role = request.headers["x-actor-role"];
-  if (!configuredToken || token !== configuredToken || role !== "manager" || typeof actorId !== "string" || !actorId.trim()) return null;
-  return actorId.trim();
-}
+const refundSchema = z.object({
+  shiftId: z.string().uuid(),
+  method: z.enum(["cash", "card", "mada", "apple_pay", "stc_pay"]),
+  lines: z.array(z.object({ productId: identity, quantity: z.number().int().positive().max(99) })).min(1).max(100)
+    .refine((lines) => new Set(lines.map((line) => line.productId)).size === lines.length, "DUPLICATE_REFUND_PRODUCT"),
+  reason
+});
 
 const cashSalesForShift = (shiftId: string) => [...orders.values()]
   .filter((order) => order.shiftId === shiftId)
-  .flatMap((order) => order.payments)
-  .filter((payment) => payment.method === "cash")
-  .reduce((sum, payment) => sum + payment.amount, 0);
+  .reduce((sum, order) => {
+    const cashTendered = order.payments.filter((payment) => payment.method === "cash").reduce((paymentSum, payment) => paymentSum + payment.amount, 0);
+    return sum + cashTendered - order.change;
+  }, 0);
 
 const cashRefundsForShift = (shiftId: string) => [...refunds.values()]
   .filter((refund) => refund.shiftId === shiftId && refund.method === "cash")
@@ -144,9 +144,51 @@ export async function registerOperationsRoutes(app: FastifyInstance) {
     if (!shift) return reply.code(404).send({ error: "SHIFT_NOT_FOUND" });
     if (shift.status !== "open") return reply.code(409).send({ error: "SHIFT_CLOSED" });
     const remaining = order.totals.total - refundedAmount(order.id);
-    if (parsed.data.amount > remaining) return reply.code(409).send({ error: "REFUND_EXCEEDS_REMAINING", remaining });
-    const refund: Refund = { id: crypto.randomUUID(), orderId: order.id, ...parsed.data, approvedBy, createdAt: new Date().toISOString() };
+    const refundCart = [];
+    for (const requestedLine of parsed.data.lines) {
+      const original = order.lines.find((line) => line.productId === requestedLine.productId);
+      if (!original) return reply.code(422).send({ error: "REFUND_PRODUCT_NOT_IN_ORDER", productId: requestedLine.productId });
+      const alreadyRefunded = refundedQuantity(order.id, requestedLine.productId);
+      if (requestedLine.quantity > original.quantity - alreadyRefunded) return reply.code(409).send({ error: "REFUND_QUANTITY_EXCEEDS_REMAINING", productId: requestedLine.productId, remaining: original.quantity - alreadyRefunded });
+      const discountBefore = Math.round((original.discount * alreadyRefunded) / original.quantity);
+      const discountAfter = Math.round((original.discount * (alreadyRefunded + requestedLine.quantity)) / original.quantity);
+      const proportionalDiscount = discountAfter - discountBefore;
+      refundCart.push({ productId: original.productId, name: original.name, unitPrice: original.unitPrice, quantity: requestedLine.quantity, taxRateBps: original.taxRateBps, discount: proportionalDiscount });
+    }
+    const amount = calculateTotals(refundCart).total;
+    if (amount > remaining) return reply.code(409).send({ error: "REFUND_EXCEEDS_REMAINING", remaining });
+    const paidByMethod = order.payments.filter((payment) => payment.method === parsed.data.method).reduce((sum, payment) => sum + payment.amount, 0) - (parsed.data.method === "cash" ? order.change : 0);
+    const refundedByMethod = [...refunds.values()].filter((refund) => refund.orderId === order.id && refund.method === parsed.data.method).reduce((sum, refund) => sum + refund.amount, 0);
+    if (amount > paidByMethod - refundedByMethod) return reply.code(409).send({ error: "REFUND_METHOD_MISMATCH", available: Math.max(0, paidByMethod - refundedByMethod) });
+    const refund: Refund = { id: crypto.randomUUID(), orderId: order.id, shiftId: parsed.data.shiftId, amount, method: parsed.data.method, lines: parsed.data.lines, reason: parsed.data.reason, approvedBy, createdAt: new Date().toISOString() };
     refunds.set(refund.id, refund);
-    return reply.code(201).send({ data: refund, remaining: remaining - refund.amount });
+    const fullyRefunded = order.lines.every((line) => refundedQuantity(order.id, line.productId) === line.quantity);
+    for (const line of parsed.data.lines) {
+      const product = products.get(line.productId);
+      if (product) product.stock += line.quantity;
+    }
+    if (order.customerMobile) {
+      const account = loyaltyAccounts.get(order.customerMobile);
+      if (account) {
+        const earned = loyaltyLedger.filter((entry) => entry.orderId === order.id && entry.type === "earn").reduce((sum, entry) => sum + entry.points, 0);
+        const previouslyReversed = -loyaltyLedger.filter((entry) => entry.orderId === order.id && entry.type === "refund_earn_reversal").reduce((sum, entry) => sum + entry.points, 0);
+        const targetReversal = fullyRefunded ? earned : Math.min(earned, Math.floor((earned * refundedAmount(order.id)) / order.totals.total));
+        const pointsToReverse = Math.max(0, targetReversal - previouslyReversed);
+        account.points = Math.max(0, account.points - pointsToReverse);
+        if (pointsToReverse) loyaltyLedger.push({ id: crypto.randomUUID(), customerMobile: account.customerMobile, orderId: order.id, type: "refund_earn_reversal", points: -pointsToReverse, createdAt: new Date().toISOString() });
+        if (fullyRefunded) {
+          const redeemed = -loyaltyLedger.filter((entry) => entry.orderId === order.id && entry.type === "redeem").reduce((sum, entry) => sum + entry.points, 0);
+          const restored = loyaltyLedger.filter((entry) => entry.orderId === order.id && entry.type === "refund_redeem_restore").reduce((sum, entry) => sum + entry.points, 0);
+          if (redeemed > restored) {
+            const pointsToRestore = redeemed - restored;
+            account.points += pointsToRestore;
+            loyaltyLedger.push({ id: crypto.randomUUID(), customerMobile: account.customerMobile, orderId: order.id, type: "refund_redeem_restore", points: pointsToRestore, createdAt: new Date().toISOString() });
+          }
+        }
+        account.visits = Math.max(0, account.visits - (fullyRefunded ? 1 : 0));
+        refreshLoyaltyTier(account);
+      }
+    }
+    return reply.code(201).send({ data: refund, remaining: remaining - amount });
   });
 }
