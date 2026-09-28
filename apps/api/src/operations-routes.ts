@@ -69,6 +69,35 @@ export async function registerOperationsRoutes(app: FastifyInstance) {
 
   app.get("/api/v1/shifts", async () => ({ data: [...shifts.values()].slice(-50).reverse() }));
 
+  app.get("/api/v1/shifts/:shiftId/report", async (request, reply) => {
+    if (!managerIdentity(request)) return reply.code(403).send({ error: "MANAGER_APPROVAL_REQUIRED" });
+    const shiftId = z.string().uuid().safeParse((request.params as { shiftId?: string }).shiftId);
+    if (!shiftId.success) return reply.code(422).send({ error: "INVALID_SHIFT_ID" });
+    const shift = shifts.get(shiftId.data);
+    if (!shift) return reply.code(404).send({ error: "SHIFT_NOT_FOUND" });
+    const shiftOrders = [...orders.values()].filter((order) => order.shiftId === shift.id);
+    const shiftRefunds = [...refunds.values()].filter((refund) => refund.shiftId === shift.id);
+    const movements = [...cashMovements.values()].filter((movement) => movement.shiftId === shift.id);
+    const sales = shiftOrders.reduce((sum, order) => sum + order.totals.total, 0);
+    const refunded = shiftRefunds.reduce((sum, refund) => sum + refund.amount, 0);
+    const paymentMethods = ["cash", "card", "mada", "apple_pay", "stc_pay"] as const;
+    const tenders = Object.fromEntries(paymentMethods.map((method) => [method,
+      shiftOrders.reduce((sum, order) => sum + order.payments.filter((payment) => payment.method === method).reduce((total, payment) => total + payment.amount, 0) - (method === "cash" ? order.change : 0), 0)
+    ]));
+    const refundsByMethod = Object.fromEntries(paymentMethods.map((method) => [method,
+      shiftRefunds.filter((refund) => refund.method === method).reduce((sum, refund) => sum + refund.amount, 0)
+    ]));
+    const expectedCash = expectedCashForShift(shift, cashSalesForShift(shift.id), cashRefundsForShift(shift.id));
+    return { data: {
+      shiftId: shift.id, status: shift.status, openingFloat: shift.openingFloat,
+      orderCount: shiftOrders.length, refundCount: shiftRefunds.length,
+      sales, refunded, netSales: sales - refunded, tenders, refundsByMethod,
+      cashIn: movements.filter((movement) => movement.type === "cash_in").reduce((sum, movement) => sum + movement.amount, 0),
+      cashOut: movements.filter((movement) => movement.type === "cash_out").reduce((sum, movement) => sum + movement.amount, 0),
+      expectedCash, countedCash: shift.countedCash ?? null, variance: shift.variance ?? null
+    } };
+  });
+
   app.post("/api/v1/shifts/open", async (request, reply) => {
     const parsed = openShiftSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(422).send({ error: "INVALID_SHIFT", issues: parsed.error.issues });

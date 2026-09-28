@@ -156,4 +156,19 @@ describe("cashier operations", () => {
     expect(refunds.size).toBe(0);
     expect(products.get("espresso")!.stock).toBe(stock);
   });
+
+  it("reconciles sales, change, refunds and movements in a manager shift report", async () => {
+    const shift = (await openShift()).json().data;
+    const url = `/api/v1/shifts/${shift.id}/report`;
+    expect((await app.inject({ method: "GET", url })).statusCode).toBe(403);
+    const sale = await app.inject({ method: "POST", url: "/api/v1/orders", headers: { "idempotency-key": "shift-report-sale-001" }, payload: { shiftId: shift.id, type: "takeaway", lines: [{ productId: "espresso", quantity: 2 }], payments: [{ method: "cash", amount: 5_000 }] } });
+    expect(sale.statusCode).toBe(201);
+    const manager = { "x-manager-approval-token": "test-manager-token", "x-actor-id": "manager-1", "x-actor-role": "manager" };
+    const refund = await app.inject({ method: "POST", url: `/api/v1/orders/${sale.json().data.id}/refunds`, headers: { ...manager, "idempotency-key": "shift-report-refund-001" }, payload: { shiftId: shift.id, method: "cash", lines: [{ productId: "espresso", quantity: 1 }], reason: "طلب العميل" } });
+    expect(refund.statusCode).toBe(201);
+    expect((await app.inject({ method: "POST", url: `/api/v1/shifts/${shift.id}/movements`, payload: { type: "cash_out", amount: 500, reason: "إيداع جزئي", actorId: "cashier-1" } })).statusCode).toBe(201);
+    const report = await app.inject({ method: "GET", url, headers: manager });
+    expect(report.statusCode).toBe(200);
+    expect(report.json().data).toMatchObject({ orderCount: 1, refundCount: 1, sales: 2_760, refunded: 1_380, netSales: 1_380, tenders: { cash: 2_760 }, refundsByMethod: { cash: 1_380 }, cashOut: 500, expectedCash: 50_880, countedCash: null, variance: null });
+  });
 });
