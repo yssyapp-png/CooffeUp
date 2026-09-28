@@ -6,10 +6,16 @@ type CartItem = Product & { quantity: number };
 type Language = "ar" | "en";
 type Shift = { id: string; cashierId: string; status: "open" | "closed" };
 const API = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
+const parseSar = (value: string): number | null => {
+  const match = /^(\d{1,7})(?:\.(\d{1,2}))?$/.exec(value.trim());
+  if (!match) return null;
+  const halalas = Number(match[1]) * 100 + Number((match[2] ?? "").padEnd(2, "0"));
+  return halalas <= 100_000_000 ? halalas : null;
+};
 
 const copy = {
-  ar: {pos:"نقطة البيع",connected:"النظام متصل",disconnected:"الخادم غير متصل",connecting:"جارٍ فحص الاتصال",shift:"الوردية",openShift:"فتح الوردية",shiftReady:"الوردية مفتوحة",closeShift:"إغلاق الوردية",countedCash:"النقد المعدود (ريال)",cashierId:"معرّف الكاشير",openingFloat:"رصيد افتتاح الصندوق (ريال)",choose:"اختر المنتجات",search:"ابحث بالاسم أو الرمز",all:"الكل",coffee:"القهوة",cold:"المشروبات الباردة",bakery:"المخبوزات",available:"متوفر",order:"الطلب الحالي",items:"أصناف",clear:"مسح",dineIn:"محلي",takeaway:"سفري",delivery:"توصيل",empty:"السلة فارغة",start:"اختر منتجًا لبدء الطلب",beforeTax:"المجموع قبل الضريبة",vat:"ضريبة القيمة المضافة (15%)",total:"الإجمالي",paying:"جارٍ تنفيذ الدفع...",pay:"دفع",cash:"نقد",mada:"مدى (تسجيل فقط)",tendered:"المبلغ المستلم نقدًا (ريال)",change:"الفكة",customer:"رقم جوال العميل 05xxxxxxxx",lookup:"عرض النقاط",points:"نقطة",visits:"زيارة",freeDrink:"استبدال مشروب مجاني",paid:"تم الدفع — الإيصال",serverError:"تعذر الاتصال بالخادم",paymentFailed:"فشل الدفع"},
-  en: {pos:"Point of Sale",connected:"System online",disconnected:"Server offline",connecting:"Checking connection",shift:"Shift",openShift:"Open shift",shiftReady:"Shift open",closeShift:"Close shift",countedCash:"Counted cash (SAR)",cashierId:"Cashier ID",openingFloat:"Opening cash (SAR)",choose:"Choose products",search:"Search by name or SKU",all:"All",coffee:"Coffee",cold:"Cold drinks",bakery:"Bakery",available:"In stock",order:"Current order",items:"items",clear:"Clear",dineIn:"Dine in",takeaway:"Takeaway",delivery:"Delivery",empty:"Cart is empty",start:"Choose a product to start",beforeTax:"Subtotal before VAT",vat:"VAT (15%)",total:"Total",paying:"Processing payment...",pay:"Pay",cash:"Cash",mada:"Mada (record only)",tendered:"Cash received (SAR)",change:"Change",customer:"Customer mobile 05xxxxxxxx",lookup:"View points",points:"points",visits:"visits",freeDrink:"Redeem a free drink",paid:"Paid — receipt",serverError:"Could not connect to server",paymentFailed:"Payment failed"}
+  ar: {pos:"نقطة البيع",connected:"النظام متصل",disconnected:"الخادم غير متصل",connecting:"جارٍ فحص الاتصال",shift:"الوردية",openShift:"فتح الوردية",shiftReady:"الوردية مفتوحة",closeShift:"إغلاق الوردية",countedCash:"النقد المعدود (ريال)",cashierId:"معرّف الكاشير",openingFloat:"رصيد افتتاح الصندوق (ريال)",choose:"قائمة المقهى",search:"ابحث بالاسم أو الرمز",all:"الكل",coffee:"القهوة",cold:"المشروبات الباردة",bakery:"المخبوزات",available:"متوفر",soldOut:"نفد المخزون",noResults:"لا توجد منتجات مطابقة",order:"الطلب الحالي",items:"أصناف",clear:"مسح",dineIn:"محلي",takeaway:"سفري",delivery:"توصيل",empty:"السلة فارغة",start:"اختر منتجًا لبدء الطلب",beforeTax:"المجموع قبل الضريبة",vat:"ضريبة القيمة المضافة (15%)",total:"الإجمالي",paying:"جارٍ تسجيل الطلب...",pay:"تسجيل الطلب",cash:"نقد",mada:"مدى (تسجيل فقط)",tendered:"المبلغ المستلم نقدًا (ريال)",change:"الفكة",customer:"رقم جوال العميل 05xxxxxxxx",lookup:"عرض النقاط",points:"نقطة",visits:"زيارة",freeDrink:"استبدال مشروب مجاني",paid:"تم تسجيل الطلب — الإيصال",serverError:"تعذر الاتصال بالخادم",paymentFailed:"تعذر تسجيل الطلب"},
+  en: {pos:"Point of Sale",connected:"System online",disconnected:"Server offline",connecting:"Checking connection",shift:"Shift",openShift:"Open shift",shiftReady:"Shift open",closeShift:"Close shift",countedCash:"Counted cash (SAR)",cashierId:"Cashier ID",openingFloat:"Opening cash (SAR)",choose:"Cafe menu",search:"Search by name or SKU",all:"All",coffee:"Coffee",cold:"Cold drinks",bakery:"Bakery",available:"In stock",soldOut:"Sold out",noResults:"No matching products",order:"Current order",items:"items",clear:"Clear",dineIn:"Dine in",takeaway:"Takeaway",delivery:"Delivery",empty:"Cart is empty",start:"Choose a product to start",beforeTax:"Subtotal before VAT",vat:"VAT (15%)",total:"Total",paying:"Recording order...",pay:"Record order",cash:"Cash",mada:"Mada (record only)",tendered:"Cash received (SAR)",change:"Change",customer:"Customer mobile 05xxxxxxxx",lookup:"View points",points:"points",visits:"visits",freeDrink:"Redeem a free drink",paid:"Order recorded — receipt",serverError:"Could not connect to server",paymentFailed:"Could not record order"}
 };
 
 export function App() {
@@ -47,7 +53,7 @@ export function App() {
     return () => { active = false; window.clearInterval(timer); };
   }, []);
   useEffect(() => { fetch(`${API}/api/v1/products`).then(r=>r.json()).then(r=>setProducts(r.data)).catch(()=>setMessage(copy[language].serverError)); }, [language]);
-  useEffect(() => { fetch(`${API}/api/v1/shifts`).then(r=>r.json()).then(body=>setShift((body.data as Shift[]).find(s=>s.status === "open" && s.cashierId === cashierId))).catch(()=>setMessage(copy.ar.serverError)); }, []);
+  useEffect(() => { fetch(`${API}/api/v1/shifts`).then(r=>r.json()).then(body=>setShift((body.data as Shift[]).find(s=>s.status === "open" && s.cashierId === cashierId))).catch(()=>setMessage(copy[language].serverError)); }, [cashierId, language]);
   const visible = products.filter(p => (category === "all" || p.category === category) && `${p.nameAr} ${p.nameEn} ${p.sku}`.toLowerCase().includes(query.toLowerCase()));
   const checkoutLines = useMemo(() => {
     const lines = cart.map(p=>({productId:p.id,name:language === "ar" ? p.nameAr : p.nameEn,unitPrice:p.price,quantity:p.quantity,taxRateBps:p.taxRateBps,discount:0}));
@@ -58,17 +64,17 @@ export function App() {
     return lines;
   },[cart,language,products,redeemFreeDrink]);
   const totals = useMemo(() => calculateTotals(checkoutLines),[checkoutLines]);
-  const cashHalalas = cashReceived.trim() === "" ? NaN : Math.round(Number(cashReceived) * 100);
-  const validCash = Number.isSafeInteger(cashHalalas) && cashHalalas >= totals.total && cashHalalas <= 100_000_000;
+  const cashHalalas = parseSar(cashReceived);
+  const validCash = cashHalalas !== null && cashHalalas >= totals.total;
   const canCheckout = connection === "online" && !!shift && cart.length > 0 && !busy && (totals.total === 0 || paymentMethod === "mada" || validCash);
   const add = (product:Product) => setCart(current => current.some(p=>p.id===product.id) ? current.map(p=>p.id===product.id?{...p,quantity:Math.min(p.stock,99,p.quantity+1)}:p) : [...current,{...product,quantity:1}]);
   const quantity = (id:string,delta:number) => setCart(current=>current.map(p=>p.id===id?{...p,quantity:Math.min(p.stock,99,p.quantity+delta)}:p).filter(p=>p.quantity>0));
   async function openShift() {
-    const cash = Number(openingFloat);
-    if (!cashierId.trim() || !Number.isSafeInteger(cash * 100) || cash < 0) { setMessage(language === "ar" ? "أدخل معرّف الكاشير ورصيدًا صحيحًا" : "Enter a cashier ID and valid opening cash"); return; }
+    const cash = parseSar(openingFloat);
+    if (!cashierId.trim() || cash === null) { setMessage(language === "ar" ? "أدخل معرّف الكاشير ورصيدًا صحيحًا" : "Enter a cashier ID and valid opening cash"); return; }
     setBusy(true); setMessage("");
     try {
-      const response = await fetch(`${API}/api/v1/shifts/open`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({cashierId:cashierId.trim(),openingFloat:Math.round(cash*100)})});
+      const response = await fetch(`${API}/api/v1/shifts/open`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({cashierId:cashierId.trim(),openingFloat:cash})});
       const body = await response.json();
       if (!response.ok) throw new Error(body.error ?? tr.serverError);
       localStorage.setItem("cooffeup.cashierId", cashierId.trim());
@@ -77,11 +83,11 @@ export function App() {
   }
   async function closeShift() {
     if (!shift || busy || cart.length) return;
-    const counted = Number(countedCash);
-    if (countedCash.trim() === "" || !Number.isSafeInteger(counted * 100) || counted < 0) { setMessage(language === "ar" ? "أدخل النقد المعدود بصورة صحيحة" : "Enter valid counted cash"); return; }
+    const counted = parseSar(countedCash);
+    if (counted === null) { setMessage(language === "ar" ? "أدخل النقد المعدود بصورة صحيحة" : "Enter valid counted cash"); return; }
     setBusy(true); setMessage("");
     try {
-      const response = await fetch(`${API}/api/v1/shifts/${shift.id}/close`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({countedCash:Math.round(counted*100)})});
+      const response = await fetch(`${API}/api/v1/shifts/${shift.id}/close`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({countedCash:counted})});
       const body = await response.json();
       if (!response.ok) throw new Error(body.error ?? tr.serverError);
       setShift(undefined); setCountedCash("");
@@ -119,12 +125,12 @@ export function App() {
         {!shift && <div className="shift-controls"><input aria-label={tr.cashierId} placeholder={tr.cashierId} value={cashierId} onChange={e=>setCashierId(e.target.value)}/><input aria-label={tr.openingFloat} placeholder={tr.openingFloat} inputMode="decimal" value={openingFloat} onChange={e=>setOpeningFloat(e.target.value)}/><button onClick={openShift} disabled={busy}>{tr.openShift}</button></div>}
         {shift && <div className="shift-controls"><input aria-label={tr.countedCash} placeholder={tr.countedCash} inputMode="decimal" value={countedCash} onChange={e=>setCountedCash(e.target.value)}/><button onClick={closeShift} disabled={busy||cart.length>0}>{tr.closeShift}</button></div>}
         <nav>{[["all",tr.all],["coffee",tr.coffee],["cold",tr.cold],["bakery",tr.bakery]].map(([id,label])=><button key={id} className={category===id?"active":""} onClick={()=>setCategory(id)}>{label}</button>)}</nav>
-        <div className="products">{visible.map(p=><button className="product" key={p.id} onClick={()=>add(p)} disabled={p.stock===0}>
-          <span className="cup"><Coffee/></span><span className="stock">{tr.available} {p.stock}</span><h3>{language === "ar" ? p.nameAr : p.nameEn}</h3><small>{language === "ar" ? p.nameEn : p.nameAr}</small><strong>{formatSar(p.price, language === "ar" ? "ar-SA" : "en-SA")}</strong>
-        </button>)}</div>
+        <div className="products">{visible.map(p=><button className="product" key={p.id} onClick={()=>add(p)} disabled={p.stock===0} aria-label={`${language === "ar" ? p.nameAr : p.nameEn} — ${formatSar(p.price, language === "ar" ? "ar-SA" : "en-SA")}`}>
+          <span className="cup"><Coffee/></span><span className="stock">{p.stock === 0 ? tr.soldOut : `${tr.available} ${p.stock}`}</span><h3>{language === "ar" ? p.nameAr : p.nameEn}</h3><small>{language === "ar" ? p.nameEn : p.nameAr}</small><strong>{formatSar(p.price, language === "ar" ? "ar-SA" : "en-SA")}</strong>
+        </button>)}{visible.length === 0 && <div className="no-results">{tr.noResults}</div>}</div>
       </section>
       <aside>
-        <div className="order-title"><div><ShoppingBag/><div><h2>{tr.order}</h2><small>{cart.reduce((s,p)=>s+p.quantity,0)} {tr.items}</small></div></div><button onClick={()=>setCart([])}>{tr.clear}</button></div>
+        <div className="order-title"><div><ShoppingBag/><div><h2>{tr.order}</h2><small>{cart.reduce((s,p)=>s+p.quantity,0)} {tr.items}</small></div></div><button onClick={()=>setCart([])} disabled={cart.length === 0 || busy}>{tr.clear}</button></div>
         <div className="order-type">{([["dine_in",tr.dineIn],["takeaway",tr.takeaway],["delivery",tr.delivery]] as const).map(([id,label])=><button key={id} className={orderType===id?"selected":""} onClick={()=>setOrderType(id)}>{label}</button>)}</div>
         <div className="loyalty"><div className="customer-search"><input inputMode="tel" autoComplete="tel" value={customerMobile} onChange={e=>{setCustomerMobile(e.target.value);setLoyalty(undefined);setRedeemFreeDrink(false);}} placeholder={tr.customer}/><button onClick={loadLoyalty}>{tr.lookup}</button></div>{loyalty&&<><p><b>{loyalty.points} {tr.points}</b><span>{loyalty.visits} {tr.visits} · {loyalty.tier}</span></p>{loyalty.points>=FREE_DRINK_POINTS&&<label><input type="checkbox" checked={redeemFreeDrink} onChange={e=>setRedeemFreeDrink(e.target.checked)}/>{tr.freeDrink}</label>}</>}</div>
         <div className="lines">{cart.length===0?<div className="empty"><ShoppingBag/><p>{tr.empty}</p><small>{tr.start}</small></div>:cart.map(p=><div className="line" key={p.id}><div><b>{language === "ar" ? p.nameAr : p.nameEn}</b><small>{formatSar(p.price, language === "ar" ? "ar-SA" : "en-SA")}</small></div><div className="stepper"><button onClick={()=>quantity(p.id,-1)}>{p.quantity===1?<Trash2/>:<Minus/>}</button><span>{p.quantity}</span><button onClick={()=>quantity(p.id,1)}><Plus/></button></div></div>)}</div>
