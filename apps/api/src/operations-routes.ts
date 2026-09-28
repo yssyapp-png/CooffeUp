@@ -9,6 +9,7 @@ import {
   expectedCashForShift,
   refundedAmount,
   refundedQuantity,
+  refundRequests,
   refunds,
   shifts,
   suspendedOrders,
@@ -135,9 +136,19 @@ export async function registerOperationsRoutes(app: FastifyInstance) {
   app.post("/api/v1/orders/:orderId/refunds", async (request, reply) => {
     const approvedBy = managerIdentity(request);
     if (!approvedBy) return reply.code(403).send({ error: "MANAGER_APPROVAL_REQUIRED" });
+    const key = request.headers["idempotency-key"];
+    if (typeof key !== "string" || key.length < 8 || key.length > 100) return reply.code(400).send({ error: "VALID_IDEMPOTENCY_KEY_REQUIRED" });
     const orderId = identity.safeParse((request.params as { orderId?: string }).orderId);
     const parsed = refundSchema.safeParse(request.body);
     if (!orderId.success || !parsed.success) return reply.code(422).send({ error: "INVALID_REFUND" });
+    const fingerprint = JSON.stringify({ orderId: orderId.data, ...parsed.data });
+    const previous = refundRequests.get(key);
+    if (previous) {
+      if (previous.fingerprint !== fingerprint) return reply.code(409).send({ error: "IDEMPOTENCY_KEY_REUSED" });
+      const refund = refunds.get(previous.refundId);
+      if (!refund) return reply.code(409).send({ error: "REFUND_REPLAY_UNAVAILABLE" });
+      return reply.send({ data: refund, remaining: previous.remaining, replayed: true });
+    }
     const order = orders.get(orderId.data);
     if (!order) return reply.code(404).send({ error: "ORDER_NOT_FOUND" });
     const shift = shifts.get(parsed.data.shiftId);
@@ -160,6 +171,10 @@ export async function registerOperationsRoutes(app: FastifyInstance) {
     const paidByMethod = order.payments.filter((payment) => payment.method === parsed.data.method).reduce((sum, payment) => sum + payment.amount, 0) - (parsed.data.method === "cash" ? order.change : 0);
     const refundedByMethod = [...refunds.values()].filter((refund) => refund.orderId === order.id && refund.method === parsed.data.method).reduce((sum, refund) => sum + refund.amount, 0);
     if (amount > paidByMethod - refundedByMethod) return reply.code(409).send({ error: "REFUND_METHOD_MISMATCH", available: Math.max(0, paidByMethod - refundedByMethod) });
+    if (parsed.data.method === "cash") {
+      const available = expectedCashForShift(shift, cashSalesForShift(shift.id), cashRefundsForShift(shift.id));
+      if (amount > available) return reply.code(409).send({ error: "INSUFFICIENT_CASH_IN_DRAWER", available });
+    }
     const refund: Refund = { id: crypto.randomUUID(), orderId: order.id, shiftId: parsed.data.shiftId, amount, method: parsed.data.method, lines: parsed.data.lines, reason: parsed.data.reason, approvedBy, createdAt: new Date().toISOString() };
     refunds.set(refund.id, refund);
     const fullyRefunded = order.lines.every((line) => refundedQuantity(order.id, line.productId) === line.quantity);
@@ -189,6 +204,7 @@ export async function registerOperationsRoutes(app: FastifyInstance) {
         refreshLoyaltyTier(account);
       }
     }
+    refundRequests.set(key, { fingerprint, refundId: refund.id, remaining: remaining - amount });
     return reply.code(201).send({ data: refund, remaining: remaining - amount });
   });
 }

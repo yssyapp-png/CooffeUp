@@ -8,8 +8,8 @@ type Shift = { id: string; cashierId: string; status: "open" | "closed" };
 const API = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
 
 const copy = {
-  ar: {pos:"نقطة البيع",connected:"النظام متصل",shift:"الوردية",openShift:"فتح الوردية",shiftReady:"الوردية مفتوحة",cashierId:"معرّف الكاشير",openingFloat:"رصيد افتتاح الصندوق (ريال)",choose:"اختر المنتجات",search:"ابحث بالاسم أو الرمز",all:"الكل",coffee:"القهوة",cold:"المشروبات الباردة",bakery:"المخبوزات",available:"متوفر",order:"الطلب الحالي",items:"أصناف",clear:"مسح",dineIn:"محلي",takeaway:"سفري",delivery:"توصيل",empty:"السلة فارغة",start:"اختر منتجًا لبدء الطلب",beforeTax:"المجموع قبل الضريبة",vat:"ضريبة القيمة المضافة (15%)",total:"الإجمالي",paying:"جارٍ تنفيذ الدفع...",pay:"دفع",customer:"رقم جوال العميل 05xxxxxxxx",lookup:"عرض النقاط",points:"نقطة",visits:"زيارة",freeDrink:"استبدال مشروب مجاني",paid:"تم الدفع — الإيصال",serverError:"تعذر الاتصال بالخادم",paymentFailed:"فشل الدفع"},
-  en: {pos:"Point of Sale",connected:"System online",shift:"Shift",openShift:"Open shift",shiftReady:"Shift open",cashierId:"Cashier ID",openingFloat:"Opening cash (SAR)",choose:"Choose products",search:"Search by name or SKU",all:"All",coffee:"Coffee",cold:"Cold drinks",bakery:"Bakery",available:"In stock",order:"Current order",items:"items",clear:"Clear",dineIn:"Dine in",takeaway:"Takeaway",delivery:"Delivery",empty:"Cart is empty",start:"Choose a product to start",beforeTax:"Subtotal before VAT",vat:"VAT (15%)",total:"Total",paying:"Processing payment...",pay:"Pay",customer:"Customer mobile 05xxxxxxxx",lookup:"View points",points:"points",visits:"visits",freeDrink:"Redeem a free drink",paid:"Paid — receipt",serverError:"Could not connect to server",paymentFailed:"Payment failed"}
+  ar: {pos:"نقطة البيع",connected:"النظام متصل",shift:"الوردية",openShift:"فتح الوردية",shiftReady:"الوردية مفتوحة",closeShift:"إغلاق الوردية",countedCash:"النقد المعدود (ريال)",cashierId:"معرّف الكاشير",openingFloat:"رصيد افتتاح الصندوق (ريال)",choose:"اختر المنتجات",search:"ابحث بالاسم أو الرمز",all:"الكل",coffee:"القهوة",cold:"المشروبات الباردة",bakery:"المخبوزات",available:"متوفر",order:"الطلب الحالي",items:"أصناف",clear:"مسح",dineIn:"محلي",takeaway:"سفري",delivery:"توصيل",empty:"السلة فارغة",start:"اختر منتجًا لبدء الطلب",beforeTax:"المجموع قبل الضريبة",vat:"ضريبة القيمة المضافة (15%)",total:"الإجمالي",paying:"جارٍ تنفيذ الدفع...",pay:"دفع",cash:"نقد",mada:"مدى (تسجيل فقط)",tendered:"المبلغ المستلم نقدًا (ريال)",change:"الفكة",customer:"رقم جوال العميل 05xxxxxxxx",lookup:"عرض النقاط",points:"نقطة",visits:"زيارة",freeDrink:"استبدال مشروب مجاني",paid:"تم الدفع — الإيصال",serverError:"تعذر الاتصال بالخادم",paymentFailed:"فشل الدفع"},
+  en: {pos:"Point of Sale",connected:"System online",shift:"Shift",openShift:"Open shift",shiftReady:"Shift open",closeShift:"Close shift",countedCash:"Counted cash (SAR)",cashierId:"Cashier ID",openingFloat:"Opening cash (SAR)",choose:"Choose products",search:"Search by name or SKU",all:"All",coffee:"Coffee",cold:"Cold drinks",bakery:"Bakery",available:"In stock",order:"Current order",items:"items",clear:"Clear",dineIn:"Dine in",takeaway:"Takeaway",delivery:"Delivery",empty:"Cart is empty",start:"Choose a product to start",beforeTax:"Subtotal before VAT",vat:"VAT (15%)",total:"Total",paying:"Processing payment...",pay:"Pay",cash:"Cash",mada:"Mada (record only)",tendered:"Cash received (SAR)",change:"Change",customer:"Customer mobile 05xxxxxxxx",lookup:"View points",points:"points",visits:"visits",freeDrink:"Redeem a free drink",paid:"Paid — receipt",serverError:"Could not connect to server",paymentFailed:"Payment failed"}
 };
 
 export function App() {
@@ -27,6 +27,9 @@ export function App() {
   const [openingFloat,setOpeningFloat] = useState("0");
   const [orderType,setOrderType] = useState<OrderType>("takeaway");
   const [category,setCategory] = useState("all");
+  const [paymentMethod,setPaymentMethod] = useState<"cash" | "mada">("cash");
+  const [cashReceived,setCashReceived] = useState("");
+  const [countedCash,setCountedCash] = useState("");
   const pendingCheckout = useRef<{ payload: string; key: string } | null>(null);
   const tr = copy[language];
   useEffect(() => { fetch(`${API}/api/v1/products`).then(r=>r.json()).then(r=>setProducts(r.data)).catch(()=>setMessage(copy[language].serverError)); }, [language]);
@@ -41,6 +44,9 @@ export function App() {
     return lines;
   },[cart,language,products,redeemFreeDrink]);
   const totals = useMemo(() => calculateTotals(checkoutLines),[checkoutLines]);
+  const cashHalalas = cashReceived.trim() === "" ? NaN : Math.round(Number(cashReceived) * 100);
+  const validCash = Number.isSafeInteger(cashHalalas) && cashHalalas >= totals.total && cashHalalas <= 100_000_000;
+  const canCheckout = !!shift && cart.length > 0 && !busy && (totals.total === 0 || paymentMethod === "mada" || validCash);
   const add = (product:Product) => setCart(current => current.some(p=>p.id===product.id) ? current.map(p=>p.id===product.id?{...p,quantity:Math.min(p.stock,99,p.quantity+1)}:p) : [...current,{...product,quantity:1}]);
   const quantity = (id:string,delta:number) => setCart(current=>current.map(p=>p.id===id?{...p,quantity:Math.min(p.stock,99,p.quantity+delta)}:p).filter(p=>p.quantity>0));
   async function openShift() {
@@ -55,6 +61,19 @@ export function App() {
       setShift(body.data);
     } catch (error) { setMessage(error instanceof Error ? error.message : tr.serverError); } finally { setBusy(false); }
   }
+  async function closeShift() {
+    if (!shift || busy || cart.length) return;
+    const counted = Number(countedCash);
+    if (countedCash.trim() === "" || !Number.isSafeInteger(counted * 100) || counted < 0) { setMessage(language === "ar" ? "أدخل النقد المعدود بصورة صحيحة" : "Enter valid counted cash"); return; }
+    setBusy(true); setMessage("");
+    try {
+      const response = await fetch(`${API}/api/v1/shifts/${shift.id}/close`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({countedCash:Math.round(counted*100)})});
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? tr.serverError);
+      setShift(undefined); setCountedCash("");
+      setMessage(`${tr.closeShift}: ${language === "ar" ? "المتوقع" : "Expected"} ${formatSar(body.data.expectedCash,language === "ar" ? "ar-SA" : "en-SA")} · ${language === "ar" ? "الفرق" : "Variance"} ${formatSar(body.data.variance,language === "ar" ? "ar-SA" : "en-SA")}`);
+    } catch (error) { setMessage(error instanceof Error ? error.message : tr.serverError); } finally { setBusy(false); }
+  }
   async function loadLoyalty() {
     if (customerMobile.trim().length < 9) return;
     const response = await fetch(`${API}/api/v1/customers/${encodeURIComponent(customerMobile.trim())}/loyalty`);
@@ -62,16 +81,16 @@ export function App() {
     if (response.ok) { setLoyalty(body.data); setRedeemFreeDrink(false); }
   }
   async function checkout() {
-    if (!cart.length || busy || !shift) return;
+    if (!canCheckout || !shift) return;
     setBusy(true); setMessage("");
     try {
-      const payload = JSON.stringify({shiftId:shift.id,type:orderType,customerMobile:customerMobile.trim() || undefined,redeemReward:redeemFreeDrink ? "free_drink" : undefined,lines:cart.map(p=>({productId:p.id,quantity:p.quantity})),payments:totals.total === 0 ? [] : [{method:"mada",amount:totals.total}]});
+      const payload = JSON.stringify({shiftId:shift.id,type:orderType,customerMobile:customerMobile.trim() || undefined,redeemReward:redeemFreeDrink ? "free_drink" : undefined,lines:cart.map(p=>({productId:p.id,quantity:p.quantity})),payments:totals.total === 0 ? [] : [{method:paymentMethod,amount:paymentMethod === "cash" ? cashHalalas : totals.total}]});
       if (pendingCheckout.current?.payload !== payload) pendingCheckout.current = {payload,key:crypto.randomUUID()};
       const response = await fetch(`${API}/api/v1/orders`,{method:"POST",headers:{"content-type":"application/json","idempotency-key":pendingCheckout.current.key},body:payload});
       const body = await response.json();
       if (!response.ok) throw new Error(body.error ?? tr.paymentFailed);
       pendingCheckout.current = null;
-      setMessage(`${tr.paid} ${body.data.receiptNumber}`); setCart([]); setLoyalty(body.data.loyalty); setRedeemFreeDrink(false);
+      setMessage(`${tr.paid} ${body.data.receiptNumber}${body.data.change ? ` · ${tr.change} ${formatSar(body.data.change,language === "ar" ? "ar-SA" : "en-SA")}` : ""}`); setCart([]); setLoyalty(body.data.loyalty); setRedeemFreeDrink(false); setCashReceived("");
       try {
         const refreshed = await fetch(`${API}/api/v1/products`);
         if (refreshed.ok) setProducts((await refreshed.json()).data);
@@ -84,6 +103,7 @@ export function App() {
       <section className="catalog">
         <div className="title"><div><p>{tr.shift}: {shift ? tr.shiftReady : tr.openShift}</p><h1>{tr.choose}</h1></div><div className="search"><Search size={19}/><input aria-label={tr.search} placeholder={tr.search} value={query} onChange={e=>setQuery(e.target.value)}/></div></div>
         {!shift && <div className="shift-controls"><input aria-label={tr.cashierId} placeholder={tr.cashierId} value={cashierId} onChange={e=>setCashierId(e.target.value)}/><input aria-label={tr.openingFloat} placeholder={tr.openingFloat} inputMode="decimal" value={openingFloat} onChange={e=>setOpeningFloat(e.target.value)}/><button onClick={openShift} disabled={busy}>{tr.openShift}</button></div>}
+        {shift && <div className="shift-controls"><input aria-label={tr.countedCash} placeholder={tr.countedCash} inputMode="decimal" value={countedCash} onChange={e=>setCountedCash(e.target.value)}/><button onClick={closeShift} disabled={busy||cart.length>0}>{tr.closeShift}</button></div>}
         <nav>{[["all",tr.all],["coffee",tr.coffee],["cold",tr.cold],["bakery",tr.bakery]].map(([id,label])=><button key={id} className={category===id?"active":""} onClick={()=>setCategory(id)}>{label}</button>)}</nav>
         <div className="products">{visible.map(p=><button className="product" key={p.id} onClick={()=>add(p)} disabled={p.stock===0}>
           <span className="cup"><Coffee/></span><span className="stock">{tr.available} {p.stock}</span><h3>{language === "ar" ? p.nameAr : p.nameEn}</h3><small>{language === "ar" ? p.nameEn : p.nameAr}</small><strong>{formatSar(p.price, language === "ar" ? "ar-SA" : "en-SA")}</strong>
@@ -95,8 +115,10 @@ export function App() {
         <div className="loyalty"><div className="customer-search"><input inputMode="tel" autoComplete="tel" value={customerMobile} onChange={e=>{setCustomerMobile(e.target.value);setLoyalty(undefined);setRedeemFreeDrink(false);}} placeholder={tr.customer}/><button onClick={loadLoyalty}>{tr.lookup}</button></div>{loyalty&&<><p><b>{loyalty.points} {tr.points}</b><span>{loyalty.visits} {tr.visits} · {loyalty.tier}</span></p>{loyalty.points>=FREE_DRINK_POINTS&&<label><input type="checkbox" checked={redeemFreeDrink} onChange={e=>setRedeemFreeDrink(e.target.checked)}/>{tr.freeDrink}</label>}</>}</div>
         <div className="lines">{cart.length===0?<div className="empty"><ShoppingBag/><p>{tr.empty}</p><small>{tr.start}</small></div>:cart.map(p=><div className="line" key={p.id}><div><b>{language === "ar" ? p.nameAr : p.nameEn}</b><small>{formatSar(p.price, language === "ar" ? "ar-SA" : "en-SA")}</small></div><div className="stepper"><button onClick={()=>quantity(p.id,-1)}>{p.quantity===1?<Trash2/>:<Minus/>}</button><span>{p.quantity}</span><button onClick={()=>quantity(p.id,1)}><Plus/></button></div></div>)}</div>
         <div className="summary"><p><span>{tr.beforeTax}</span><b>{formatSar(totals.taxable, language === "ar" ? "ar-SA" : "en-SA")}</b></p><p><span>{tr.vat}</span><b>{formatSar(totals.tax, language === "ar" ? "ar-SA" : "en-SA")}</b></p><div><span>{tr.total}</span><strong>{formatSar(totals.total, language === "ar" ? "ar-SA" : "en-SA")}</strong></div></div>
+        <div className="payment-method"><label><input type="radio" name="payment" checked={paymentMethod === "cash"} onChange={()=>setPaymentMethod("cash")}/>{tr.cash}</label><label><input type="radio" name="payment" checked={paymentMethod === "mada"} onChange={()=>setPaymentMethod("mada")}/>{tr.mada}</label></div>
+        {paymentMethod === "cash" && totals.total > 0 && <div className="cash-entry"><input aria-label={tr.tendered} placeholder={tr.tendered} inputMode="decimal" value={cashReceived} onChange={e=>setCashReceived(e.target.value)}/>{validCash && <small>{tr.change}: {formatSar(cashHalalas-totals.total,language === "ar" ? "ar-SA" : "en-SA")}</small>}</div>}
         {message&&<div className="message" role="status">{message}</div>}
-        <button className="pay" onClick={checkout} disabled={!cart.length||busy||!shift}>{busy?tr.paying:`${tr.pay} ${formatSar(totals.total, language === "ar" ? "ar-SA" : "en-SA")}`}</button>
+        <button className="pay" onClick={checkout} disabled={!canCheckout}>{busy?tr.paying:`${tr.pay} ${formatSar(totals.total, language === "ar" ? "ar-SA" : "en-SA")}`}</button>
       </aside>
     </main>
   </div>;

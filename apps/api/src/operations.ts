@@ -52,6 +52,7 @@ export const shifts = new Map<string, Shift>();
 export const cashMovements = new Map<string, CashMovement>();
 export const suspendedOrders = new Map<string, SuspendedOrder>();
 export const refunds = new Map<string, Refund>();
+export const refundRequests = new Map<string, { fingerprint: string; refundId: string; remaining: number }>();
 
 export const activeShiftForCashier = (cashierId: string) =>
   [...shifts.values()].find((shift) => shift.cashierId === cashierId && shift.status === "open");
