@@ -171,4 +171,26 @@ describe("cashier operations", () => {
     expect(report.statusCode).toBe(200);
     expect(report.json().data).toMatchObject({ orderCount: 1, refundCount: 1, sales: 2_760, refunded: 1_380, netSales: 1_380, tenders: { cash: 2_760 }, refundsByMethod: { cash: 1_380 }, cashOut: 500, expectedCash: 50_880, countedCash: null, variance: null });
   });
+
+  it("allocates tax rounding across partial refunds without losing a halala", async () => {
+    products.set("rounding-test", { id: "rounding-test", sku: "TEST-ROUND", nameAr: "اختبار", nameEn: "Test", category: "test", price: 3, taxRateBps: 1500, stock: 2, active: true });
+    try {
+      const shift = (await openShift()).json().data;
+      const sale = await app.inject({ method: "POST", url: "/api/v1/orders", headers: { "idempotency-key": "rounding-sale-001" }, payload: { shiftId: shift.id, type: "takeaway", lines: [{ productId: "rounding-test", quantity: 2 }], payments: [{ method: "mada", amount: 7 }] } });
+      expect(sale.statusCode).toBe(201);
+      expect(sale.json().data.totals.total).toBe(7);
+      const headers = { "x-manager-approval-token": "test-manager-token", "x-actor-id": "manager-1", "x-actor-role": "manager" };
+      const payload = { shiftId: shift.id, method: "mada", lines: [{ productId: "rounding-test", quantity: 1 }], reason: "طلب العميل" };
+      const url = `/api/v1/orders/${sale.json().data.id}/refunds`;
+      const first = await app.inject({ method: "POST", url, headers: { ...headers, "idempotency-key": "rounding-refund-001" }, payload });
+      const second = await app.inject({ method: "POST", url, headers: { ...headers, "idempotency-key": "rounding-refund-002" }, payload });
+      expect(first.statusCode).toBe(201);
+      expect(second.statusCode).toBe(201);
+      expect(first.json().data.amount + second.json().data.amount).toBe(7);
+      expect(second.json().remaining).toBe(0);
+      expect(products.get("rounding-test")!.stock).toBe(2);
+    } finally {
+      products.delete("rounding-test");
+    }
+  });
 });

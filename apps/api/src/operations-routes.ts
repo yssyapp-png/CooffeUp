@@ -1,6 +1,5 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { calculateTotals } from "@cooffeup/shared";
 import { loyaltyAccounts, loyaltyLedger, orders, products, refreshLoyaltyTier } from "./store.js";
 import { managerIdentity } from "./manager-approval.js";
 import {
@@ -184,7 +183,7 @@ export async function registerOperationsRoutes(app: FastifyInstance) {
     if (!shift) return reply.code(404).send({ error: "SHIFT_NOT_FOUND" });
     if (shift.status !== "open") return reply.code(409).send({ error: "SHIFT_CLOSED" });
     const remaining = order.totals.total - refundedAmount(order.id);
-    const refundCart = [];
+    let amount = 0;
     for (const requestedLine of parsed.data.lines) {
       const original = order.lines.find((line) => line.productId === requestedLine.productId);
       if (!original) return reply.code(422).send({ error: "REFUND_PRODUCT_NOT_IN_ORDER", productId: requestedLine.productId });
@@ -192,10 +191,12 @@ export async function registerOperationsRoutes(app: FastifyInstance) {
       if (requestedLine.quantity > original.quantity - alreadyRefunded) return reply.code(409).send({ error: "REFUND_QUANTITY_EXCEEDS_REMAINING", productId: requestedLine.productId, remaining: original.quantity - alreadyRefunded });
       const discountBefore = Math.round((original.discount * alreadyRefunded) / original.quantity);
       const discountAfter = Math.round((original.discount * (alreadyRefunded + requestedLine.quantity)) / original.quantity);
-      const proportionalDiscount = discountAfter - discountBefore;
-      refundCart.push({ productId: original.productId, name: original.name, unitPrice: original.unitPrice, quantity: requestedLine.quantity, taxRateBps: original.taxRateBps, discount: proportionalDiscount });
+      const taxableBefore = original.unitPrice * alreadyRefunded - discountBefore;
+      const taxableAfter = original.unitPrice * (alreadyRefunded + requestedLine.quantity) - discountAfter;
+      const taxBefore = Math.round((taxableBefore * original.taxRateBps) / 10_000);
+      const taxAfter = Math.round((taxableAfter * original.taxRateBps) / 10_000);
+      amount += taxableAfter - taxableBefore + taxAfter - taxBefore;
     }
-    const amount = calculateTotals(refundCart).total;
     if (amount > remaining) return reply.code(409).send({ error: "REFUND_EXCEEDS_REMAINING", remaining });
     const paidByMethod = order.payments.filter((payment) => payment.method === parsed.data.method).reduce((sum, payment) => sum + payment.amount, 0) - (parsed.data.method === "cash" ? order.change : 0);
     const refundedByMethod = [...refunds.values()].filter((refund) => refund.orderId === order.id && refund.method === parsed.data.method).reduce((sum, refund) => sum + refund.amount, 0);
