@@ -8,8 +8,8 @@ type Shift = { id: string; cashierId: string; status: "open" | "closed" };
 const API = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
 
 const copy = {
-  ar: {pos:"نقطة البيع",connected:"النظام متصل",shift:"الوردية",openShift:"فتح الوردية",shiftReady:"الوردية مفتوحة",closeShift:"إغلاق الوردية",countedCash:"النقد المعدود (ريال)",cashierId:"معرّف الكاشير",openingFloat:"رصيد افتتاح الصندوق (ريال)",choose:"اختر المنتجات",search:"ابحث بالاسم أو الرمز",all:"الكل",coffee:"القهوة",cold:"المشروبات الباردة",bakery:"المخبوزات",available:"متوفر",order:"الطلب الحالي",items:"أصناف",clear:"مسح",dineIn:"محلي",takeaway:"سفري",delivery:"توصيل",empty:"السلة فارغة",start:"اختر منتجًا لبدء الطلب",beforeTax:"المجموع قبل الضريبة",vat:"ضريبة القيمة المضافة (15%)",total:"الإجمالي",paying:"جارٍ تنفيذ الدفع...",pay:"دفع",cash:"نقد",mada:"مدى (تسجيل فقط)",tendered:"المبلغ المستلم نقدًا (ريال)",change:"الفكة",customer:"رقم جوال العميل 05xxxxxxxx",lookup:"عرض النقاط",points:"نقطة",visits:"زيارة",freeDrink:"استبدال مشروب مجاني",paid:"تم الدفع — الإيصال",serverError:"تعذر الاتصال بالخادم",paymentFailed:"فشل الدفع"},
-  en: {pos:"Point of Sale",connected:"System online",shift:"Shift",openShift:"Open shift",shiftReady:"Shift open",closeShift:"Close shift",countedCash:"Counted cash (SAR)",cashierId:"Cashier ID",openingFloat:"Opening cash (SAR)",choose:"Choose products",search:"Search by name or SKU",all:"All",coffee:"Coffee",cold:"Cold drinks",bakery:"Bakery",available:"In stock",order:"Current order",items:"items",clear:"Clear",dineIn:"Dine in",takeaway:"Takeaway",delivery:"Delivery",empty:"Cart is empty",start:"Choose a product to start",beforeTax:"Subtotal before VAT",vat:"VAT (15%)",total:"Total",paying:"Processing payment...",pay:"Pay",cash:"Cash",mada:"Mada (record only)",tendered:"Cash received (SAR)",change:"Change",customer:"Customer mobile 05xxxxxxxx",lookup:"View points",points:"points",visits:"visits",freeDrink:"Redeem a free drink",paid:"Paid — receipt",serverError:"Could not connect to server",paymentFailed:"Payment failed"}
+  ar: {pos:"نقطة البيع",connected:"النظام متصل",disconnected:"الخادم غير متصل",connecting:"جارٍ فحص الاتصال",shift:"الوردية",openShift:"فتح الوردية",shiftReady:"الوردية مفتوحة",closeShift:"إغلاق الوردية",countedCash:"النقد المعدود (ريال)",cashierId:"معرّف الكاشير",openingFloat:"رصيد افتتاح الصندوق (ريال)",choose:"اختر المنتجات",search:"ابحث بالاسم أو الرمز",all:"الكل",coffee:"القهوة",cold:"المشروبات الباردة",bakery:"المخبوزات",available:"متوفر",order:"الطلب الحالي",items:"أصناف",clear:"مسح",dineIn:"محلي",takeaway:"سفري",delivery:"توصيل",empty:"السلة فارغة",start:"اختر منتجًا لبدء الطلب",beforeTax:"المجموع قبل الضريبة",vat:"ضريبة القيمة المضافة (15%)",total:"الإجمالي",paying:"جارٍ تنفيذ الدفع...",pay:"دفع",cash:"نقد",mada:"مدى (تسجيل فقط)",tendered:"المبلغ المستلم نقدًا (ريال)",change:"الفكة",customer:"رقم جوال العميل 05xxxxxxxx",lookup:"عرض النقاط",points:"نقطة",visits:"زيارة",freeDrink:"استبدال مشروب مجاني",paid:"تم الدفع — الإيصال",serverError:"تعذر الاتصال بالخادم",paymentFailed:"فشل الدفع"},
+  en: {pos:"Point of Sale",connected:"System online",disconnected:"Server offline",connecting:"Checking connection",shift:"Shift",openShift:"Open shift",shiftReady:"Shift open",closeShift:"Close shift",countedCash:"Counted cash (SAR)",cashierId:"Cashier ID",openingFloat:"Opening cash (SAR)",choose:"Choose products",search:"Search by name or SKU",all:"All",coffee:"Coffee",cold:"Cold drinks",bakery:"Bakery",available:"In stock",order:"Current order",items:"items",clear:"Clear",dineIn:"Dine in",takeaway:"Takeaway",delivery:"Delivery",empty:"Cart is empty",start:"Choose a product to start",beforeTax:"Subtotal before VAT",vat:"VAT (15%)",total:"Total",paying:"Processing payment...",pay:"Pay",cash:"Cash",mada:"Mada (record only)",tendered:"Cash received (SAR)",change:"Change",customer:"Customer mobile 05xxxxxxxx",lookup:"View points",points:"points",visits:"visits",freeDrink:"Redeem a free drink",paid:"Paid — receipt",serverError:"Could not connect to server",paymentFailed:"Payment failed"}
 };
 
 export function App() {
@@ -18,6 +18,7 @@ export function App() {
   const [query,setQuery] = useState("");
   const [busy,setBusy] = useState(false);
   const [message,setMessage] = useState("");
+  const [connection,setConnection] = useState<"checking" | "online" | "offline">("checking");
   const [language,setLanguage] = useState<Language>("ar");
   const [customerMobile,setCustomerMobile] = useState("");
   const [loyalty,setLoyalty] = useState<LoyaltySnapshot>();
@@ -32,6 +33,19 @@ export function App() {
   const [countedCash,setCountedCash] = useState("");
   const pendingCheckout = useRef<{ payload: string; key: string } | null>(null);
   const tr = copy[language];
+  useEffect(() => {
+    let active = true;
+    async function checkConnection() {
+      try {
+        const response = await fetch(`${API}/health`, { signal: AbortSignal.timeout(5_000), cache: "no-store" });
+        const body = response.ok ? await response.json() : null;
+        if (active) setConnection(body?.ok === true ? "online" : "offline");
+      } catch { if (active) setConnection("offline"); }
+    }
+    void checkConnection();
+    const timer = window.setInterval(() => void checkConnection(), 5_000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, []);
   useEffect(() => { fetch(`${API}/api/v1/products`).then(r=>r.json()).then(r=>setProducts(r.data)).catch(()=>setMessage(copy[language].serverError)); }, [language]);
   useEffect(() => { fetch(`${API}/api/v1/shifts`).then(r=>r.json()).then(body=>setShift((body.data as Shift[]).find(s=>s.status === "open" && s.cashierId === cashierId))).catch(()=>setMessage(copy.ar.serverError)); }, []);
   const visible = products.filter(p => (category === "all" || p.category === category) && `${p.nameAr} ${p.nameEn} ${p.sku}`.toLowerCase().includes(query.toLowerCase()));
@@ -46,7 +60,7 @@ export function App() {
   const totals = useMemo(() => calculateTotals(checkoutLines),[checkoutLines]);
   const cashHalalas = cashReceived.trim() === "" ? NaN : Math.round(Number(cashReceived) * 100);
   const validCash = Number.isSafeInteger(cashHalalas) && cashHalalas >= totals.total && cashHalalas <= 100_000_000;
-  const canCheckout = !!shift && cart.length > 0 && !busy && (totals.total === 0 || paymentMethod === "mada" || validCash);
+  const canCheckout = connection === "online" && !!shift && cart.length > 0 && !busy && (totals.total === 0 || paymentMethod === "mada" || validCash);
   const add = (product:Product) => setCart(current => current.some(p=>p.id===product.id) ? current.map(p=>p.id===product.id?{...p,quantity:Math.min(p.stock,99,p.quantity+1)}:p) : [...current,{...product,quantity:1}]);
   const quantity = (id:string,delta:number) => setCart(current=>current.map(p=>p.id===id?{...p,quantity:Math.min(p.stock,99,p.quantity+delta)}:p).filter(p=>p.quantity>0));
   async function openShift() {
@@ -98,7 +112,7 @@ export function App() {
     } catch (error) { setMessage(error instanceof Error ? error.message : "حدث خطأ"); } finally { setBusy(false); }
   }
   return <div className="shell" dir={language === "ar" ? "rtl" : "ltr"} lang={language}>
-    <header><div className="brand"><span><Coffee size={22}/></span><div><b>CooffeUp</b><small>{tr.pos}</small></div></div><div className="status"><Wifi size={16}/> {tr.connected}</div><div className="header-actions"><button className="language" onClick={()=>setLanguage(language === "ar" ? "en" : "ar")}>{language === "ar" ? "English" : "العربية"}</button><span className="cashier">{shift?.cashierId ?? cashierId}</span></div></header>
+    <header><div className="brand"><span><Coffee size={22}/></span><div><b>CooffeUp</b><small>{tr.pos}</small></div></div><div className="status" role="status"><Wifi size={16}/> {connection === "online" ? tr.connected : connection === "offline" ? tr.disconnected : tr.connecting}</div><div className="header-actions"><button className="language" onClick={()=>setLanguage(language === "ar" ? "en" : "ar")}>{language === "ar" ? "English" : "العربية"}</button><span className="cashier">{shift?.cashierId ?? cashierId}</span></div></header>
     <main>
       <section className="catalog">
         <div className="title"><div><p>{tr.shift}: {shift ? tr.shiftReady : tr.openShift}</p><h1>{tr.choose}</h1></div><div className="search"><Search size={19}/><input aria-label={tr.search} placeholder={tr.search} value={query} onChange={e=>setQuery(e.target.value)}/></div></div>
