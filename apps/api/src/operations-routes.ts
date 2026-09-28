@@ -172,7 +172,7 @@ export async function registerOperationsRoutes(app: FastifyInstance) {
       if (account) {
         const earned = loyaltyLedger.filter((entry) => entry.orderId === order.id && entry.type === "earn").reduce((sum, entry) => sum + entry.points, 0);
         const previouslyReversed = -loyaltyLedger.filter((entry) => entry.orderId === order.id && entry.type === "refund_earn_reversal").reduce((sum, entry) => sum + entry.points, 0);
-        const targetReversal = fullyRefunded ? earned : Math.min(earned, Math.floor((earned * refundedAmount(order.id)) / order.totals.total));
+        const targetReversal = fullyRefunded ? earned : order.totals.total === 0 ? 0 : Math.min(earned, Math.floor((earned * refundedAmount(order.id)) / order.totals.total));
         const pointsToReverse = Math.max(0, targetReversal - previouslyReversed);
         account.points = Math.max(0, account.points - pointsToReverse);
         if (pointsToReverse) loyaltyLedger.push({ id: crypto.randomUUID(), customerMobile: account.customerMobile, orderId: order.id, type: "refund_earn_reversal", points: -pointsToReverse, createdAt: new Date().toISOString() });

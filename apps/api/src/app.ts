@@ -16,7 +16,7 @@ const orderSchema = z.object({
   redeemReward: z.enum(["free_drink"]).optional(),
   lines: z.array(z.object({productId:z.string().min(1),quantity:z.number().int().positive().max(99),discount:z.number().int().nonnegative().optional(),notes:z.string().max(250).optional()})).min(1).max(100)
     .refine((lines) => new Set(lines.map((line) => line.productId)).size === lines.length, "DUPLICATE_PRODUCT"),
-  payments: z.array(z.object({method:z.enum(["cash","card","mada","apple_pay","stc_pay"]),amount:z.number().int().positive().max(100_000_000)})).min(1).max(5)
+  payments: z.array(z.object({method:z.enum(["cash","card","mada","apple_pay","stc_pay"]),amount:z.number().int().positive().max(100_000_000)})).max(5)
 });
 
 export async function buildApp() {
@@ -74,6 +74,8 @@ export async function buildApp() {
       eligible.discount = (eligible.discount ?? 0) + eligible.unitPrice;
     }
     const totals = calculateTotals(cart);
+    if (totals.total > 0 && parsed.data.payments.length === 0) return reply.code(422).send({error:"PAYMENT_REQUIRED"});
+    if (totals.total === 0 && parsed.data.payments.length > 0) return reply.code(422).send({error:"ZERO_TOTAL_PAYMENT_NOT_ALLOWED"});
     const paid = parsed.data.payments.reduce((sum, payment) => sum + payment.amount, 0);
     if (paid < totals.total) return reply.code(422).send({error:"PAYMENT_SHORT",due:totals.total-paid});
     const change = paid - totals.total;

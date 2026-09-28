@@ -69,6 +69,16 @@ describe("orders API", () => {
     expect(result.json().data.totals.total).toBe(1610);
     expect(result.json().data.loyalty.points).toBe(14);
   });
+  it("redeems a free drink without requiring a zero-value payment", async () => {
+    const customerMobile = "0551234567";
+    getOrCreateLoyaltyAccount("+966551234567").points = 100;
+    const payload = {shiftId:await openShift(),type:"takeaway",customerMobile,redeemReward:"free_drink",lines:[{productId:"espresso",quantity:1}],payments:[]};
+    const result = await app.inject({method:"POST",url:"/api/v1/orders",headers:{"idempotency-key":"free-drink-only-001"},payload});
+    expect(result.statusCode).toBe(201);
+    expect(result.json().data.totals.total).toBe(0);
+    expect(result.json().data.payments).toEqual([]);
+    expect(result.json().data.loyalty.points).toBe(0);
+  });
 
   it("rejects orders for missing and closed shifts", async () => {
     const missing = await app.inject({method:"POST",url:"/api/v1/orders",headers:{"idempotency-key":"missing-shift-001"},payload:{shiftId:crypto.randomUUID(),type:"takeaway",lines:[{productId:"espresso",quantity:1}],payments:[{method:"mada",amount:1380}]}});
