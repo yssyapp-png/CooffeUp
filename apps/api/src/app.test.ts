@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { buildApp } from "./app.js";
 import { shifts } from "./operations.js";
-import { getOrCreateLoyaltyAccount, idempotency, loyaltyAccounts, loyaltyLedger, orders, products } from "./store.js";
+import { getOrCreateLoyaltyAccount, idempotency, idempotencyRequests, loyaltyAccounts, loyaltyLedger, orders, products } from "./store.js";
 
 process.env.NODE_ENV = "test";
 process.env.MANAGER_APPROVAL_TOKEN = "test-manager-token";
@@ -10,7 +10,7 @@ const initialStocks = new Map([...products].map(([id, product]) => [id, product.
 beforeAll(() => app.ready());
 afterAll(() => app.close());
 beforeEach(() => {
-  shifts.clear(); orders.clear(); idempotency.clear(); loyaltyAccounts.clear(); loyaltyLedger.length = 0;
+  shifts.clear(); orders.clear(); idempotency.clear(); idempotencyRequests.clear(); loyaltyAccounts.clear(); loyaltyLedger.length = 0;
   for (const [id, stock] of initialStocks) products.get(id)!.stock = stock;
 });
 
@@ -31,6 +31,23 @@ describe("orders API", () => {
     expect(first.statusCode).toBe(201);
     expect(retry.statusCode).toBe(200);
     expect(retry.json().replayed).toBe(true);
+  });
+  it("rejects reuse of a key for a different order", async () => {
+    const shiftId = await openShift();
+    const payload = {shiftId,type:"takeaway",lines:[{productId:"espresso",quantity:1}],payments:[{method:"mada",amount:1380}]};
+    const first = await app.inject({method:"POST",url:"/api/v1/orders",headers:{"idempotency-key":"collision-order-001"},payload});
+    const collision = await app.inject({method:"POST",url:"/api/v1/orders",headers:{"idempotency-key":"collision-order-001"},payload:{...payload,lines:[{productId:"espresso",quantity:2}]}});
+    expect(first.statusCode).toBe(201);
+    expect(collision.statusCode).toBe(409);
+    expect(collision.json().error).toBe("IDEMPOTENCY_KEY_REUSED");
+    expect(products.get("espresso")!.stock).toBe(initialStocks.get("espresso")! - 1);
+  });
+  it("rejects duplicate product lines before changing stock", async () => {
+    const payload = {shiftId:await openShift(),type:"takeaway",lines:[{productId:"espresso",quantity:60},{productId:"espresso",quantity:60}],payments:[{method:"cash",amount:165600}]};
+    const result = await app.inject({method:"POST",url:"/api/v1/orders",headers:{"idempotency-key":"duplicate-lines-001"},payload});
+    expect(result.statusCode).toBe(422);
+    expect(products.get("espresso")!.stock).toBe(initialStocks.get("espresso"));
+    expect(orders.size).toBe(0);
   });
   it("awards loyalty points once even when the order is retried", async () => {
     const customerMobile = "0551234567";

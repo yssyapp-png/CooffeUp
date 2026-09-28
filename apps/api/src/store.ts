@@ -41,6 +41,7 @@ export const products = new Map<string, Product>([
 ]);
 export const orders = new Map<string, StoredOrder>();
 export const idempotency = new Map<string, StoredOrder>();
+export const idempotencyRequests = new Map<string, string>();
 export const loyaltyAccounts = new Map<string, LoyaltyAccount>();
 export const loyaltyLedger: LoyaltyLedgerEntry[] = [];
 

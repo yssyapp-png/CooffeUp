@@ -4,7 +4,7 @@ import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import { calculateLoyaltyPoints, calculateTotals, FREE_DRINK_POINTS, normalizeSaudiMobile } from "@cooffeup/shared";
 import { z } from "zod";
-import { getOrCreateLoyaltyAccount, idempotency, loyaltyLedger, loyaltySnapshot, nextReceipt, orders, products, refreshLoyaltyTier, type StoredOrder } from "./store.js";
+import { getOrCreateLoyaltyAccount, idempotency, idempotencyRequests, loyaltyLedger, loyaltySnapshot, nextReceipt, orders, products, refreshLoyaltyTier, type StoredOrder } from "./store.js";
 import { registerOperationsRoutes } from "./operations-routes.js";
 import { managerIdentity } from "./manager-approval.js";
 import { shifts } from "./operations.js";
@@ -14,8 +14,9 @@ const orderSchema = z.object({
   type: z.enum(["dine_in", "takeaway", "delivery"]),
   customerMobile: z.string().trim().min(9).max(24).optional(),
   redeemReward: z.enum(["free_drink"]).optional(),
-  lines: z.array(z.object({productId:z.string().min(1),quantity:z.number().int().positive().max(99),discount:z.number().int().nonnegative().optional(),notes:z.string().max(250).optional()})).min(1).max(100),
-  payments: z.array(z.object({method:z.enum(["cash","card","mada","apple_pay","stc_pay"]),amount:z.number().int().positive()})).min(1).max(5)
+  lines: z.array(z.object({productId:z.string().min(1),quantity:z.number().int().positive().max(99),discount:z.number().int().nonnegative().optional(),notes:z.string().max(250).optional()})).min(1).max(100)
+    .refine((lines) => new Set(lines.map((line) => line.productId)).size === lines.length, "DUPLICATE_PRODUCT"),
+  payments: z.array(z.object({method:z.enum(["cash","card","mada","apple_pay","stc_pay"]),amount:z.number().int().positive().max(100_000_000)})).min(1).max(5)
 });
 
 export async function buildApp() {
@@ -38,10 +39,14 @@ export async function buildApp() {
   app.post("/api/v1/orders", async (request, reply) => {
     const key = request.headers["idempotency-key"];
     if (typeof key !== "string" || key.length < 8 || key.length > 100) return reply.code(400).send({error:"VALID_IDEMPOTENCY_KEY_REQUIRED"});
-    const existing = idempotency.get(key);
-    if (existing) return reply.code(200).send({data:existing,replayed:true});
     const parsed = orderSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(422).send({error:"INVALID_ORDER",issues:parsed.error.issues});
+    const fingerprint = JSON.stringify(parsed.data);
+    const existing = idempotency.get(key);
+    if (existing) {
+      if (idempotencyRequests.get(key) !== fingerprint) return reply.code(409).send({error:"IDEMPOTENCY_KEY_REUSED"});
+      return reply.code(200).send({data:existing,replayed:true});
+    }
     const shift = shifts.get(parsed.data.shiftId);
     if (!shift) return reply.code(404).send({error:"SHIFT_NOT_FOUND"});
     if (shift.status !== "open") return reply.code(409).send({error:"SHIFT_CLOSED"});
@@ -97,6 +102,7 @@ export async function buildApp() {
     };
     orders.set(order.id, order);
     idempotency.set(key, order);
+    idempotencyRequests.set(key, fingerprint);
     return reply.code(201).send({data:order,change});
   });
   return app;
