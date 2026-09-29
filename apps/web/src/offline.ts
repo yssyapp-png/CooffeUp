@@ -3,7 +3,7 @@ import {
   applySyncResults, dueEntries, localReceiptNumber, markBatchFailed,
   type HeldCart, type OfflineOrderPayload, type OutboxEntry, type Product, type SyncResult
 } from "@cooffeup/shared";
-import { api, ApiError } from "./api";
+import { api, ApiError, currentBranch } from "./api";
 
 /**
  * Local persistence for offline selling: the product catalogue, the outbox of sales waiting to be
@@ -48,7 +48,7 @@ export function queueOfflineSale(id: string, payload: OfflineOrderPayload): Outb
   const sequence = read<number>(KEYS.sequence, 0) + 1;
   write(KEYS.sequence, sequence);
   const capturedAt = new Date().toISOString();
-  const entry: OutboxEntry = { id, deviceId: deviceId(), localReceipt: localReceiptNumber(deviceId(), sequence), payload, capturedAt, attempts: 0, nextAttemptAt: capturedAt };
+  const entry: OutboxEntry = { id, deviceId: deviceId(), branchId: currentBranch() ?? "main", localReceipt: localReceiptNumber(deviceId(), sequence), payload, capturedAt, attempts: 0, nextAttemptAt: capturedAt };
   writeOutbox([...readOutbox(), entry]);
   return entry;
 }
@@ -85,13 +85,17 @@ export function useOutboxSync(enabled: boolean) {
 
   const syncNow = useCallback(async () => {
     if (running.current || !enabled || !navigator.onLine) return;
-    const batch = dueEntries(readOutbox());
-    if (!batch.length) return;
+    // One request per branch, so each sale lands in the stock and shift of the branch that made it.
+    const due = dueEntries(readOutbox());
+    if (!due.length) return;
+    const branch = due[0].branchId ?? "main";
+    const batch = due.filter((entry) => (entry.branchId ?? "main") === branch);
     running.current = true;
     try {
       const { data } = await api<{ data: SyncResult[] }>("/api/v1/sync/orders", {
         method: "POST",
-        body: { deviceId: deviceId(), entries: batch.map(({ id, localReceipt, capturedAt, payload }) => ({ id, localReceipt, capturedAt, payload })) }
+        body: { deviceId: deviceId(), entries: batch.map(({ id, localReceipt, capturedAt, payload }) => ({ id, localReceipt, capturedAt, payload })) },
+        headers: { "x-branch-id": branch }
       });
       const { remaining } = applySyncResults(readOutbox(), data);
       writeOutbox(remaining);

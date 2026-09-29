@@ -3,6 +3,7 @@ import type { ReportCategory, ReportResult } from "@cooffeup/shared";
 import { Download, Play } from "lucide-react";
 import { api } from "../api";
 import { DataTable, formatCell, Notice, PageHeader, todayRiyadh, useAction, useLoad } from "../components";
+import { useSession } from "../session";
 
 interface ReportMeta { id: string; nameAr: string; category: ReportCategory; descriptionAr: string; usesRange: boolean }
 
@@ -17,14 +18,18 @@ function toCsv(result: ReportResult) {
 export function Reports() {
   const catalog = useLoad(() => api<{ data: ReportMeta[]; categories: Record<ReportCategory, string> }>("/api/v1/reports"));
   const [selected, setSelected] = useState<ReportMeta | null>(null);
+  const { branches } = useSession();
   const [range, setRange] = useState({ from: monthStart(), to: todayRiyadh() });
+  const [branchFilter, setBranchFilter] = useState("");
   const [result, setResult] = useState<ReportResult | null>(null);
   const action = useAction();
 
   async function run(report: ReportMeta) {
     setSelected(report);
     setResult(null);
-    const query = report.usesRange ? `?from=${range.from}&to=${range.to}` : "";
+    const params = new URLSearchParams(report.usesRange ? { from: range.from, to: range.to } : {});
+    if (branchFilter) params.set("branchId", branchFilter);
+    const query = params.toString() ? `?${params}` : "";
     const response = await action.run(() => api<{ data: ReportResult }>(`/api/v1/reports/${report.id}${query}`));
     if (response) setResult(response.data);
   }
@@ -41,6 +46,8 @@ export function Reports() {
     <PageHeader eyebrow={`${catalog.data?.data.length ?? ""} تقريرًا دوريًا`} title="التقارير" actions={<>
       <label className="inline-field">من<input type="date" value={range.from} onChange={(event) => setRange({ ...range, from: event.target.value })} /></label>
       <label className="inline-field">إلى<input type="date" value={range.to} onChange={(event) => setRange({ ...range, to: event.target.value })} /></label>
+      {branches.length > 1 && <label className="inline-field">الفرع<select value={branchFilter} onChange={(event) => setBranchFilter(event.target.value)}>
+        <option value="">كل الفروع</option>{branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>}
     </>} />
     {catalog.error && <Notice tone="error">{catalog.error}</Notice>}
     <div className="reports">

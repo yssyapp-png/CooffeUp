@@ -1,7 +1,7 @@
 import { useState, type ComponentType } from "react";
 import type { Feature, Permission } from "@cooffeup/shared";
 import {
-  BarChart3, Bike, BookOpen, CalendarClock, ChefHat, Coffee, LogOut, Plug, Receipt, ShieldCheck, ShoppingBag, Users, Wallet, Wifi, WifiOff
+  BarChart3, Bike, BookOpen, CalendarClock, ChefHat, Coffee, LogOut, Plug, Receipt, ShieldCheck, ShoppingBag, Store, Users, Wallet, Wifi, WifiOff
 } from "lucide-react";
 import { Login } from "./pages/Login";
 import { Pos } from "./pages/Pos";
@@ -15,6 +15,7 @@ import { Reports } from "./pages/Reports";
 import { Integrations } from "./pages/Integrations";
 import { Staff } from "./pages/Staff";
 import { Shift } from "./pages/Shift";
+import { Branches } from "./pages/Branches";
 import { LanguageProvider, useI18n, type StringKey } from "./i18n";
 import { useOnline } from "./offline";
 import { SessionProvider, useSession } from "./session";
@@ -40,12 +41,14 @@ const PAGES: PageDef[] = [
   { id: "purchases", label: "nav_purchases", icon: Receipt, component: Purchases, anyOf: ["purchases.manage", "expenses.manage"] },
   { id: "accounting", label: "nav_accounting", icon: BookOpen, component: Accounting, anyOf: ["accounting.view"] },
   { id: "reports", label: "nav_reports", icon: BarChart3, component: Reports, anyOf: ["reports.view"] },
+  { id: "branches", label: "nav_branches", icon: Store, component: Branches, anyOf: ["branches.manage", "inventory.manage"] },
   { id: "integrations", label: "nav_integrations", icon: Plug, component: Integrations, anyOf: ["integrations.manage"] },
   { id: "staff", label: "nav_staff", icon: ShieldCheck, component: Staff, anyOf: ["staff.manage"] }
 ];
 
 function Shell() {
-  const { staff, settings, can, hasFeature, logout } = useSession();
+  const { staff, settings, can, hasFeature, logout, branches, branchId, switchBranch } = useSession();
+  const selectable = branches.filter((branch) => branch.active);
   const online = useOnline();
   const { t, toggle, lang } = useI18n();
   const pages = PAGES.filter((page) => page.anyOf.some(can) && (!page.features || page.features.some(hasFeature)));
@@ -55,7 +58,12 @@ function Shell() {
 
   return <div className="app">
     <aside className="sidebar">
-      <div className="brand"><span><Coffee size={22} /></span><div><b>CooffeUp</b><small>{settings.branchName || settings.sector.nameAr}</small></div></div>
+      <div className="brand"><span><Coffee size={22} /></span><div><b>CooffeUp</b><small>{branches.find((branch) => branch.id === branchId)?.name ?? (settings.branchName || settings.sector.nameAr)}</small></div></div>
+      {!staff.branchId && selectable.length > 1 && <label className="branch-picker">{t("branch")}
+        <select value={branchId} onChange={(event) => switchBranch(event.target.value)}>
+          {selectable.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}{branch.kind === "temporary" ? ` (${t("booth")})` : ""}</option>)}
+        </select>
+      </label>}
       <nav aria-label={lang === "ar" ? "الأقسام" : "Sections"}>{pages.map((page) => <button key={page.id} className={page.id === active ? "active" : ""} onClick={() => setActive(page.id)}>
         <page.icon size={18} /><span>{t(page.label)}</span>
       </button>)}</nav>
@@ -68,7 +76,7 @@ function Shell() {
         </div>
       </div>
     </aside>
-    <main className="content" {...(current && !current.bilingual ? { dir: "rtl", lang: "ar" } : {})}>{Page ? <Page /> : <p className="muted center">{t("noSections")}</p>}</main>
+    <main className="content" {...(current && !current.bilingual ? { dir: "rtl", lang: "ar" } : {})}>{Page ? <Page key={branchId} /> : <p className="muted center">{t("noSections")}</p>}</main>
   </div>;
 }
 

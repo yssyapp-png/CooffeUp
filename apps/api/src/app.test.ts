@@ -133,7 +133,7 @@ describe("orders", () => {
 
 describe("offline mode", () => {
   it("syncs queued sales, deduplicates and flags stock conflicts", async () => {
-    store.products.get("coffee-beans")!.stock = 1;
+    store.adjustStock("main", "coffee-beans", 1 - store.stockAt("main", "coffee-beans"));
     const entry = (id: string, productId: string, quantity: number, amount: number) => ({
       id, localReceipt: `OFF-DEV1-${id.slice(-3)}`, capturedAt: "2026-09-28T09:00:00Z",
       payload: { type: "takeaway", lines: [{ productId, quantity }], payments: [{ method: "cash", amount }] }

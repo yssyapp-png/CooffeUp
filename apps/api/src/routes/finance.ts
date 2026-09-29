@@ -5,7 +5,7 @@ import {
   type ExpenseCategory, type ExpenseRecord, type Permission, type PurchaseRecord, type ReportDataset
 } from "@cooffeup/shared";
 import { z } from "zod";
-import { actor, audit, fail, guarded, newId, now, parse, type AppContext } from "../context.js";
+import { actor, audit, branchOf, fail, guarded, newId, now, parse, type AppContext } from "../context.js";
 import { attemptDelivery, emit } from "../services/events.js";
 import { postJournal } from "../services/ledger.js";
 import { enqueueStoreSync } from "../services/store-sync.js";
@@ -59,14 +59,16 @@ export function registerFinanceRoutes(app: FastifyInstance, ctx: AppContext) {
     }
 
     const createdAt = now();
-    const purchase: PurchaseRecord = { id: newId(), ...body, createdBy: actor(request).id, createdAt };
+    const branchId = branchOf(request);
+    const purchase: PurchaseRecord = { id: newId(), branchId, ...body, createdBy: actor(request).id, createdAt };
     for (const line of body.lines) {
       if (!line.productId) continue;
       const product = store.products.get(line.productId)!;
+      // Cost is a company-wide weighted average, so it uses stock across all branches.
       const onHand = Math.max(product.stock, 0);
       product.cost = Math.round((onHand * (product.cost ?? 0) + line.quantity * line.unitCost) / (onHand + line.quantity));
-      product.stock += line.quantity;
-      store.movements.push({ id: newId(), productId: product.id, quantity: line.quantity, reason: "purchase", refId: purchase.id, createdAt });
+      store.adjustStock(branchId, product.id, line.quantity);
+      store.movements.push({ id: newId(), branchId, productId: product.id, quantity: line.quantity, reason: "purchase", refId: purchase.id, createdAt });
     }
     store.purchases.set(purchase.id, purchase);
     postJournal(ctx, {
@@ -89,7 +91,7 @@ export function registerFinanceRoutes(app: FastifyInstance, ctx: AppContext) {
     }), request.body);
     const expense: ExpenseRecord = {
       id: newId(), ...body, total: body.net + body.vat, date: body.date ?? riyadhDate(now()),
-      shiftId: body.paidFrom === "cash" ? store.openShift()?.id : undefined, createdBy: actor(request).id, createdAt: now()
+      shiftId: body.paidFrom === "cash" ? store.openShift(branchOf(request))?.id : undefined, createdBy: actor(request).id, createdAt: now()
     };
     store.expenses.set(expense.id, expense);
     postJournal(ctx, {
@@ -182,8 +184,10 @@ export function registerFinanceRoutes(app: FastifyInstance, ctx: AppContext) {
   });
 
   // ---------- Reports ----------
-  const dataset = (): ReportDataset => ({
-    orders: [...store.orders.values()], refunds: [...store.refunds.values()], products: [...store.products.values()],
+  /** With a branch, stock reports show that branch's quantities; otherwise company-wide totals. */
+  const dataset = (branchId?: string): ReportDataset => ({
+    orders: [...store.orders.values()], refunds: [...store.refunds.values()],
+    products: [...store.products.values()].map((product) => (branchId ? { ...product, stock: store.stockAt(branchId, product.id) } : product)),
     purchases: [...store.purchases.values()], expenses: [...store.expenses.values()], journal: store.journal, shifts: [...store.shifts.values()],
     movements: store.movements, kitchenTickets: [...store.kitchenTickets.values()],
     customers: [...store.customers.values()].map((customer) => ({ id: customer.id, name: customer.name })),
@@ -196,8 +200,9 @@ export function registerFinanceRoutes(app: FastifyInstance, ctx: AppContext) {
 
   app.get<{ Params: { id: string } }>("/api/v1/reports/:id", guard("reports.view"), async (request) => {
     const report = reportById(request.params.id) ?? fail(404, "REPORT_NOT_FOUND");
-    const range = parse(rangeSchema, request.query);
+    const range = parse(rangeSchema.extend({ branchId: z.string().optional() }), request.query);
+    if (range.branchId && !store.branches.has(range.branchId)) fail(404, "BRANCH_NOT_FOUND");
     const { run: _run, ...meta } = report;
-    return { report: meta, range, data: report.run(dataset(), range) };
+    return { report: meta, range, data: report.run(dataset(range.branchId), range) };
   });
 }

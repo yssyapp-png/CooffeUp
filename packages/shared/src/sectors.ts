@@ -26,6 +26,7 @@ export const TABLE_STATUS_LABELS: Record<TableStatus, string> = { available: "م
 
 export interface DiningTable {
   id: string;
+  branchId?: string;
   label: string;
   area: string;
   seats: number;

@@ -12,7 +12,7 @@ const STRINGS = {
     appSubtitle: "نظام نقاط البيع والمحاسبة", whoIsUsing: "من يستخدم الجهاز؟", changeUser: "← تغيير المستخدم", pin: "الرمز السري", delete: "حذف", signIn: "دخول",
     online: "متصل", offlineSelling: "بلا إنترنت — البيع مستمر", logout: "خروج", noSections: "لا توجد أقسام متاحة لصلاحياتك", language: "English",
     nav_pos: "نقطة البيع", nav_channels: "الطلبات الموحدة", nav_kitchen: "المطبخ والطاولات", nav_appointments: "المواعيد", nav_customers: "العملاء",
-    nav_shift: "الوردية والصندوق", nav_purchases: "المشتريات والمصروفات", nav_accounting: "المحاسبة", nav_reports: "التقارير", nav_integrations: "الربط والمنصات", nav_staff: "الموظفون والصلاحيات",
+    nav_shift: "الوردية والصندوق", nav_purchases: "المشتريات والمصروفات", nav_accounting: "المحاسبة", nav_reports: "التقارير", nav_integrations: "الربط والمنصات", nav_staff: "الموظفون والصلاحيات", nav_branches: "الفروع والمخزون", branch: "الفرع", booth: "بوث",
     chooseProducts: "اختر المنتجات", searchPlaceholder: "ابحث بالاسم أو امسح الباركود", all: "الكل", inStock: "متوفر", soldOut: "نفد", noResults: "لا توجد منتجات مطابقة",
     savedOnDevice: "بلا اتصال — يتم حفظ المبيعات على الجهاز", connectedShort: "متصل", awaitingSync: "بانتظار المزامنة", syncNow: "مزامنة الآن", ignore: "تجاهل",
     currentOrder: "الطلب الحالي", items: "أصناف", holdCart: "تعليق السلة", heldCarts: "السلات المعلقة", clear: "مسح", noHeldCarts: "لا توجد سلات معلقة",
@@ -38,7 +38,7 @@ const STRINGS = {
     appSubtitle: "Point of sale & accounting", whoIsUsing: "Who is using this device?", changeUser: "← Change user", pin: "PIN", delete: "Delete", signIn: "Sign in",
     online: "Online", offlineSelling: "Offline — selling continues", logout: "Sign out", noSections: "No sections available for your permissions", language: "العربية",
     nav_pos: "Point of sale", nav_channels: "All orders", nav_kitchen: "Kitchen & tables", nav_appointments: "Appointments", nav_customers: "Customers",
-    nav_shift: "Shift & drawer", nav_purchases: "Purchases & expenses", nav_accounting: "Accounting", nav_reports: "Reports", nav_integrations: "Integrations", nav_staff: "Staff & permissions",
+    nav_shift: "Shift & drawer", nav_purchases: "Purchases & expenses", nav_accounting: "Accounting", nav_reports: "Reports", nav_integrations: "Integrations", nav_staff: "Staff & permissions", nav_branches: "Branches & stock", branch: "Branch", booth: "booth",
     chooseProducts: "Choose products", searchPlaceholder: "Search by name or scan a barcode", all: "All", inStock: "In stock", soldOut: "Sold out", noResults: "No matching products",
     savedOnDevice: "Offline — sales are saved on this device", connectedShort: "Online", awaitingSync: "Awaiting sync", syncNow: "Sync now", ignore: "Dismiss",
     currentOrder: "Current order", items: "items", holdCart: "Hold cart", heldCarts: "Held carts", clear: "Clear", noHeldCarts: "No held carts",
@@ -78,7 +78,11 @@ const ERRORS: Record<Language, Record<string, string>> = {
     SHIFT_REQUIRED: "افتح الوردية أولًا قبل البيع", SHIFT_NOT_OPEN: "الوردية مغلقة", IDEMPOTENCY_KEY_REUSED: "تم إرسال طلب مختلف بنفس المعرّف، أعد المحاولة",
     INSUFFICIENT_LOYALTY_POINTS: "نقاط العميل لا تكفي للمكافأة", NO_REWARD_ELIGIBLE_DRINK: "لا يوجد مشروب مؤهل للمكافأة في الطلب",
     CUSTOMER_REQUIRED_FOR_REWARD: "أضف العميل إلى الطلب لاستبدال النقاط", REFUND_METHOD_MISMATCH: "لا يمكن الاسترجاع بطريقة دفع غير التي دُفع بها",
-    INSUFFICIENT_CASH_IN_DRAWER: "النقد في الدرج لا يكفي", UNEXPECTED: "حدث خطأ غير متوقع"
+    INSUFFICIENT_CASH_IN_DRAWER: "النقد في الدرج لا يكفي", UNEXPECTED: "حدث خطأ غير متوقع",
+    BRANCH_CLOSED: "الفرع خارج فترة عمله أو موقوف", BRANCH_NOT_ALLOWED: "لا يمكنك العمل في هذا الفرع", BRANCH_NOT_FOUND: "الفرع غير موجود",
+    TEMPORARY_BRANCH_NEEDS_END_DATE: "حدد تاريخ انتهاء البوث", INVALID_BRANCH_WINDOW: "تاريخ البداية يجب أن يسبق النهاية", SAME_BRANCH: "اختر فرعين مختلفين",
+    SHIFT_STILL_OPEN: "أغلق وردية الفرع أولًا", MAIN_BRANCH_REQUIRED: "لا يمكن إيقاف الفرع الرئيسي", BRANCH_INACTIVE: "الفرع موقوف",
+    TABLE_IN_OTHER_BRANCH: "الطاولة تابعة لفرع آخر"
   },
   en: {
     UNAUTHENTICATED: "Session expired, please sign in again", INVALID_CREDENTIALS: "Incorrect PIN", ACCOUNT_LOCKED: "Account temporarily locked after repeated wrong PINs",
@@ -90,7 +94,9 @@ const ERRORS: Record<Language, Record<string, string>> = {
     IDEMPOTENCY_KEY_REUSED: "A different order was sent with the same key, please retry", INSUFFICIENT_LOYALTY_POINTS: "Not enough loyalty points for the reward",
     NO_REWARD_ELIGIBLE_DRINK: "No reward-eligible drink in the order", CUSTOMER_REQUIRED_FOR_REWARD: "Add the customer to redeem points",
     REFUND_METHOD_MISMATCH: "Refunds must go back to the original payment method", INSUFFICIENT_CASH_IN_DRAWER: "Not enough cash in the drawer",
-    INVOICE_SMS_LIMIT_REACHED: "This invoice was already sent 3 times", UNEXPECTED: "Something went wrong"
+    INVOICE_SMS_LIMIT_REACHED: "This invoice was already sent 3 times", UNEXPECTED: "Something went wrong",
+    BRANCH_CLOSED: "This branch is outside its trading dates or inactive", BRANCH_NOT_ALLOWED: "You can't work at this branch", BRANCH_NOT_FOUND: "Branch not found",
+    SHIFT_STILL_OPEN: "Close the branch's shift first", TABLE_IN_OTHER_BRANCH: "This table belongs to another branch"
   }
 };
 

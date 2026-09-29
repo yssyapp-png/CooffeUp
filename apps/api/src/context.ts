@@ -3,11 +3,13 @@ import { can, type Permission, type StaffAccess } from "@cooffeup/shared";
 import type { z } from "zod";
 import type { AppConfig } from "./config.js";
 import type { Crypto } from "./security.js";
-import type { StaffMember, Store } from "./store.js";
+import { MAIN_BRANCH_ID, type StaffMember, type Store } from "./store.js";
 
 declare module "fastify" {
   interface FastifyRequest {
     staff?: StaffMember;
+    /** Branch the request acts on: the `x-branch-id` header, else the staff member's home branch. */
+    branchId?: string;
     rawBody?: string;
   }
 }
@@ -33,6 +35,7 @@ export const staffCan = (staff: StaffMember, permission: Permission) => can(acce
 
 /** The authenticated staff member; only call inside routes protected by `authenticate`. */
 export const actor = (request: FastifyRequest) => request.staff!;
+export const branchOf = (request: FastifyRequest) => request.branchId ?? MAIN_BRANCH_ID;
 
 export function audit(ctx: AppContext, request: FastifyRequest | undefined, action: string, target?: { type: string; id?: string }, details?: Record<string, unknown>) {
   ctx.store.audit.push({ id: newId(), staffId: request?.staff?.id, action, targetType: target?.type, targetId: target?.id, details, ip: request?.ip, createdAt: now() });
@@ -56,6 +59,11 @@ export function authenticate(ctx: AppContext) {
     const staff = claims ? ctx.store.staff.get(claims.sub) : undefined;
     if (!staff || !staff.active || staff.tokenVersion !== claims!.ver) return reply.code(401).send({ error: "UNAUTHENTICATED" });
     request.staff = staff;
+    const requested = request.headers["x-branch-id"];
+    const branchId = typeof requested === "string" && requested ? requested : staff.branchId ?? MAIN_BRANCH_ID;
+    if (!ctx.store.branches.has(branchId)) return reply.code(404).send({ error: "BRANCH_NOT_FOUND" });
+    if (staff.branchId && staff.branchId !== branchId) return reply.code(403).send({ error: "BRANCH_NOT_ALLOWED" });
+    request.branchId = branchId;
   };
 }
 

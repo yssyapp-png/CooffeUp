@@ -19,7 +19,8 @@ export function publicStaff(staff: StaffMember) {
   const access = accessOf(staff);
   return {
     id: staff.id, name: staff.name, role: staff.role, roleLabel: ROLE_LABELS[staff.role], active: staff.active,
-    grants: staff.grants, revokes: staff.revokes, maxDiscountBps: maxDiscountBps(access), permissions: [...permissionsFor(access)]
+    grants: staff.grants, revokes: staff.revokes, maxDiscountBps: maxDiscountBps(access), permissions: [...permissionsFor(access)],
+    branchId: staff.branchId ?? null
   };
 }
 
@@ -64,8 +65,10 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext) {
       sellerName: z.string().min(2).max(120).optional(),
       sellerVat: z.string().regex(/^3\d{13}3$/).optional(),
       branchName: z.string().min(1).max(120).optional(),
-      requireOpenShift: z.boolean().optional()
+      requireOpenShift: z.boolean().optional(),
+      fulfilmentBranchId: z.string().optional()
     }), request.body);
+    if (body.fulfilmentBranchId && !store.branches.get(body.fulfilmentBranchId)?.active) fail(422, "BRANCH_NOT_FOUND");
     Object.assign(store.settings, body);
     audit(ctx, request, "settings.updated", { type: "settings" }, body);
     return { data: store.settings };
@@ -79,12 +82,13 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext) {
     const body = parse(z.object({
       name: z.string().min(2).max(80), role: roleSchema, pin: pinSchema,
       grants: z.array(permissionSchema).default([]), revokes: z.array(permissionSchema).default([]),
-      maxDiscountBps: z.number().int().min(0).max(10_000).optional()
+      maxDiscountBps: z.number().int().min(0).max(10_000).optional(), branchId: z.string().optional()
     }), request.body);
     if (body.role === "owner" && actor(request).role !== "owner") fail(403, "ONLY_OWNER_CAN_CREATE_OWNER");
+    if (body.branchId && !store.branches.has(body.branchId)) fail(404, "BRANCH_NOT_FOUND");
     const staff: StaffMember = {
       id: newId(), name: body.name, role: body.role, pinHash: hashPin(body.pin), grants: body.grants, revokes: body.revokes,
-      maxDiscountBps: body.maxDiscountBps, active: true, failedAttempts: 0, tokenVersion: 1
+      maxDiscountBps: body.maxDiscountBps, branchId: body.branchId, active: true, failedAttempts: 0, tokenVersion: 1
     };
     store.staff.set(staff.id, staff);
     audit(ctx, request, "staff.created", { type: "staff", id: staff.id }, { role: staff.role });
@@ -96,8 +100,9 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext) {
     const body = parse(z.object({
       name: z.string().min(2).max(80).optional(), role: roleSchema.optional(), pin: pinSchema.optional(), active: z.boolean().optional(),
       grants: z.array(permissionSchema).optional(), revokes: z.array(permissionSchema).optional(),
-      maxDiscountBps: z.number().int().min(0).max(10_000).nullable().optional()
+      maxDiscountBps: z.number().int().min(0).max(10_000).nullable().optional(), branchId: z.string().nullable().optional()
     }), request.body);
+    if (body.branchId && !store.branches.has(body.branchId)) fail(404, "BRANCH_NOT_FOUND");
     const me = actor(request);
     if ((staff.role === "owner" || body.role === "owner") && me.role !== "owner") fail(403, "ONLY_OWNER_CAN_CHANGE_OWNER");
     if (staff.id === me.id && (body.active === false || (body.role && body.role !== me.role))) fail(422, "CANNOT_DEMOTE_SELF");
@@ -108,6 +113,7 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext) {
     if (body.grants) staff.grants = body.grants;
     if (body.revokes) staff.revokes = body.revokes;
     if (body.maxDiscountBps !== undefined) staff.maxDiscountBps = body.maxDiscountBps ?? undefined;
+    if (body.branchId !== undefined) staff.branchId = body.branchId ?? undefined;
     // Any change to access invalidates existing sessions for that member.
     staff.tokenVersion += 1;
     audit(ctx, request, "staff.updated", { type: "staff", id: staff.id }, { ...body, pin: body.pin ? "***" : undefined });

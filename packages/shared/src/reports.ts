@@ -25,6 +25,8 @@ export interface ReportDataset {
 export interface ReportRange {
   from?: string;
   to?: string;
+  /** Limits sales, refunds, shifts and stock movements to one branch. */
+  branchId?: string;
 }
 
 export type ColumnKind = "text" | "money" | "number" | "percent" | "date" | "datetime";
@@ -55,6 +57,7 @@ export interface ReportDefinition {
 const RIYADH_OFFSET = 3 * 3_600_000;
 export const riyadhDate = (iso: string) => new Date(new Date(iso).getTime() + RIYADH_OFFSET).toISOString().slice(0, 10);
 export const riyadhHour = (iso: string) => new Date(new Date(iso).getTime() + RIYADH_OFFSET).getUTCHours();
+const inBranch = (branchId: string | undefined, range: ReportRange) => !range.branchId || branchId === range.branchId;
 const inRange = (iso: string, range: ReportRange) => {
   const day = iso.length === 10 ? iso : riyadhDate(iso);
   return (!range.from || day >= range.from) && (!range.to || day <= range.to);
@@ -75,8 +78,11 @@ function groupBy<T>(items: T[], key: (item: T) => string) {
   return groups;
 }
 
-const orders = (data: ReportDataset, range: ReportRange) => data.orders.filter((order) => inRange(order.createdAt, range));
-const refunds = (data: ReportDataset, range: ReportRange) => data.refunds.filter((refund) => inRange(refund.createdAt, range));
+const orders = (data: ReportDataset, range: ReportRange) => data.orders.filter((order) => inRange(order.createdAt, range) && inBranch(order.branchId, range));
+const refunds = (data: ReportDataset, range: ReportRange) => {
+  const branchOrders = new Set(orders(data, { branchId: range.branchId }).map((order) => order.id));
+  return data.refunds.filter((refund) => inRange(refund.createdAt, range) && (!range.branchId || branchOrders.has(refund.orderId)));
+};
 const journal = (data: ReportDataset, range: ReportRange) => data.journal.filter((entry) => inRange(entry.date, range));
 
 function salesGrouping(label: string, key: (order: OrderRecord) => string, name: (key: string) => string = (value) => value): ReportDefinition["run"] {
@@ -268,7 +274,7 @@ export const REPORTS: ReportDefinition[] = [
     id: "stock_movements", nameAr: "حركة المخزون", category: "inventory", usesRange: true, descriptionAr: "الوارد والصادر لكل منتج خلال الفترة",
     run(data, range) {
       const names = new Map(data.products.map((product) => [product.id, product.nameAr]));
-      const groups = groupBy(data.movements.filter((movement) => inRange(movement.createdAt, range)), (movement) => movement.productId);
+      const groups = groupBy(data.movements.filter((movement) => inRange(movement.createdAt, range) && inBranch(movement.branchId, range)), (movement) => movement.productId);
       const rows = [...groups.entries()].map(([productId, items]) => ({
         product: names.get(productId) ?? productId,
         incoming: sum(items.filter((item) => item.quantity > 0), (item) => item.quantity),
@@ -359,7 +365,7 @@ export const REPORTS: ReportDefinition[] = [
     id: "shift_closings", nameAr: "إغلاق الصندوق", category: "cash", usesRange: true, descriptionAr: "النقد المتوقع والمعدود والفروقات لكل وردية",
     run(data, range) {
       const names = new Map(data.staff.map((member) => [member.id, member.name]));
-      const rows = data.shifts.filter((shift) => inRange(shift.openedAt, range)).map((shift) => ({
+      const rows = data.shifts.filter((shift) => inRange(shift.openedAt, range) && inBranch(shift.branchId, range)).map((shift) => ({
         staff: names.get(shift.staffId) ?? shift.staffId, opened: shift.openedAt, closed: shift.closedAt ?? null, opening: shift.openingFloat,
         expected: shift.expectedCash ?? null, counted: shift.countedCash ?? null, variance: shift.variance ?? null, status: shift.status === "open" ? "مفتوحة" : "مغلقة"
       }));
@@ -411,7 +417,7 @@ export const REPORTS: ReportDefinition[] = [
   {
     id: "kitchen_performance", nameAr: "أداء المطبخ", category: "operations", usesRange: true, descriptionAr: "متوسط زمن التحضير والطلبات المتأخرة",
     run(data, range) {
-      const tickets = data.kitchenTickets.filter((ticket) => inRange(ticket.createdAt, range) && ticket.readyAt);
+      const tickets = data.kitchenTickets.filter((ticket) => inRange(ticket.createdAt, range) && inBranch(ticket.branchId, range) && ticket.readyAt);
       const minutes = (ticket: KitchenTicket) => (new Date(ticket.readyAt!).getTime() - new Date(ticket.createdAt).getTime()) / 60_000;
       const groups = groupBy(tickets, (ticket) => ORDER_TYPE_LABELS[ticket.orderType]);
       const rows = [...groups.entries()].map(([type, items]) => ({

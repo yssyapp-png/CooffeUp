@@ -20,6 +20,8 @@ export interface OutboxEntry {
   /** Doubles as the idempotency key sent to the server. */
   id: string;
   deviceId: string;
+  /** Branch where the sale was made; older entries without it belong to the main branch. */
+  branchId?: string;
   localReceipt: string;
   payload: OfflineOrderPayload;
   capturedAt: string;

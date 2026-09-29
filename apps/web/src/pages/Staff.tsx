@@ -5,16 +5,17 @@ import { api } from "../api";
 import { Notice, PageHeader, useAction, useLoad } from "../components";
 import { useSession } from "../session";
 
-interface StaffView { id: string; name: string; role: Role; roleLabel: string; active: boolean; grants: Permission[]; revokes: Permission[]; maxDiscountBps: number; permissions: Permission[] }
+interface StaffView { id: string; name: string; role: Role; roleLabel: string; active: boolean; grants: Permission[]; revokes: Permission[]; maxDiscountBps: number; permissions: Permission[]; branchId: string | null }
 interface AuditView { id: string; staffId?: string; action: string; targetType?: string; createdAt: string }
 
 export function Staff() {
-  const { settings, reloadSettings } = useSession();
+  const { settings, reloadSettings, branches } = useSession();
+  const branchName = (id: string | null) => (id ? branches.find((branch) => branch.id === id)?.name ?? id : "كل الفروع");
   const [version, setVersion] = useState(0);
   const staff = useLoad(() => api<{ data: StaffView[]; roles: Record<Role, string> }>("/api/v1/staff"), [version]);
   const audit = useLoad(() => api<{ data: AuditView[] }>("/api/v1/audit?limit=40"), [version]);
   const [editing, setEditing] = useState<StaffView | null>(null);
-  const [form, setForm] = useState({ name: "", role: "cashier" as Role, pin: "" });
+  const [form, setForm] = useState({ name: "", role: "cashier" as Role, pin: "", branchId: "" });
   const action = useAction();
   const reload = () => setVersion((value) => value + 1);
   const roles = staff.data?.roles;
@@ -32,7 +33,7 @@ export function Staff() {
 
   async function saveMember() {
     if (!editing) return;
-    await action.run(() => api(`/api/v1/staff/${editing.id}`, { method: "PATCH", body: { role: editing.role, active: editing.active, grants: editing.grants, revokes: editing.revokes, maxDiscountBps: editing.maxDiscountBps } }), "تم حفظ الصلاحيات، وسيُطلب من الموظف تسجيل الدخول من جديد");
+    await action.run(() => api(`/api/v1/staff/${editing.id}`, { method: "PATCH", body: { role: editing.role, active: editing.active, grants: editing.grants, revokes: editing.revokes, maxDiscountBps: editing.maxDiscountBps, branchId: editing.branchId } }), "تم حفظ الصلاحيات، وسيُطلب من الموظف تسجيل الدخول من جديد");
     setEditing(null);
     reload();
   }
@@ -43,9 +44,9 @@ export function Staff() {
     <div className="split">
       <div className="card">
         <div className="table-wrap"><table>
-          <thead><tr><th>الموظف</th><th>الدور</th><th>حد الخصم</th><th>الحالة</th><th /></tr></thead>
+          <thead><tr><th>الموظف</th><th>الدور</th><th>الفرع</th><th>حد الخصم</th><th>الحالة</th><th /></tr></thead>
           <tbody>{(staff.data?.data ?? []).map((member) => <tr key={member.id}>
-            <td>{member.name}</td><td>{member.roleLabel}</td><td className="num">{member.maxDiscountBps / 100}%</td><td>{member.active ? "نشط" : "موقوف"}</td>
+            <td>{member.name}</td><td>{member.roleLabel}</td><td>{branchName(member.branchId)}</td><td className="num">{member.maxDiscountBps / 100}%</td><td>{member.active ? "نشط" : "موقوف"}</td>
             <td><button className="ghost small" onClick={() => setEditing(member)}><ShieldCheck size={14} /> الصلاحيات</button></td>
           </tr>)}</tbody>
         </table></div>
@@ -53,12 +54,14 @@ export function Staff() {
       <div className="stack">
         <form className="card form" onSubmit={async (event) => {
           event.preventDefault();
-          const created = await action.run(() => api("/api/v1/staff", { method: "POST", body: form }), "تمت إضافة الموظف");
-          if (created) { setForm({ name: "", role: "cashier", pin: "" }); reload(); }
+          const created = await action.run(() => api("/api/v1/staff", { method: "POST", body: { ...form, branchId: form.branchId || undefined } }), "تمت إضافة الموظف");
+          if (created) { setForm({ name: "", role: "cashier", pin: "", branchId: "" }); reload(); }
         }}>
           <h3><UserPlus size={16} /> موظف جديد</h3>
           <label>الاسم<input required minLength={2} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
           <label>الدور<select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value as Role })}>{roles && Object.entries(roles).map(([role, label]) => <option key={role} value={role}>{label}</option>)}</select></label>
+          <label>الفرع<select value={form.branchId} onChange={(event) => setForm({ ...form, branchId: event.target.value })}>
+            <option value="">كل الفروع (يختار عند العمل)</option>{branches.filter((branch) => branch.active).map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>
           <label>الرمز السري (4–8 أرقام)<input type="password" inputMode="numeric" pattern="\d{4,8}" required value={form.pin} onChange={(event) => setForm({ ...form, pin: event.target.value })} /></label>
           <button className="primary" disabled={action.busy}>إضافة</button>
         </form>
@@ -79,6 +82,8 @@ export function Staff() {
           {roles && Object.entries(roles).map(([role, label]) => <option key={role} value={role}>{label}</option>)}</select></label>
         <label>أقصى خصم مسموح %<input type="number" min={0} max={100} value={editing.maxDiscountBps / 100} onChange={(event) => setEditing({ ...editing, maxDiscountBps: Math.round(Number(event.target.value) * 100) })} /></label>
       </div>
+      <label>الفرع<select value={editing.branchId ?? ""} onChange={(event) => setEditing({ ...editing, branchId: event.target.value || null })}>
+        <option value="">كل الفروع</option>{branches.filter((branch) => branch.active).map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>
       <label className="check"><input type="checkbox" checked={editing.active} onChange={(event) => setEditing({ ...editing, active: event.target.checked })} /> الحساب نشط</label>
       <div className="permissions">{PERMISSIONS.map((permission) => <label key={permission} className="check">
         <input type="checkbox" checked={editing.permissions.includes(permission)} onChange={(event) => toggle(editing, permission, event.target.checked)} /> {PERMISSION_LABELS[permission]}

@@ -9,6 +9,10 @@ export class ApiError extends Error {
 }
 
 let token: string | null = null;
+/** Branch this till works at; sent on every request so stock, shifts and kitchen are scoped to it. */
+let branchId: string | null = null;
+export const setBranch = (value: string | null) => { branchId = value; };
+export const currentBranch = () => branchId;
 let onUnauthorized: () => void = () => undefined;
 
 export function setSession(value: string | null, unauthorized?: () => void) {
@@ -24,6 +28,7 @@ export async function api<T = unknown>(path: string, init: { method?: string; bo
       headers: {
         ...(init.body !== undefined ? { "content-type": "application/json" } : {}),
         ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...(branchId ? { "x-branch-id": branchId } : {}),
         ...init.headers
       },
       body: init.body !== undefined ? JSON.stringify(init.body) : undefined
@@ -42,7 +47,7 @@ export async function api<T = unknown>(path: string, init: { method?: string; bo
 }
 
 export async function download(path: string, filename: string) {
-  const response = await fetch(`${API_URL}${path}`, { headers: token ? { authorization: `Bearer ${token}` } : {} });
+  const response = await fetch(`${API_URL}${path}`, { headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(branchId ? { "x-branch-id": branchId } : {}) } });
   if (!response.ok) throw new ApiError(response.status, `HTTP_${response.status}`);
   const url = URL.createObjectURL(await response.blob());
   const link = Object.assign(document.createElement("a"), { href: url, download: filename });

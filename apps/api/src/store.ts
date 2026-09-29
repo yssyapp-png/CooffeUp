@@ -1,7 +1,7 @@
 import type {
-  Appointment, BusinessType, DeliveryPlatform, DiningTable, EcommercePlatform, ExpenseRecord, ExternalOrderStatus, HeldCart,
+  Appointment, Branch, BusinessType, DeliveryPlatform, DiningTable, EcommercePlatform, ExpenseRecord, ExternalOrderStatus, HeldCart,
   JournalEntry, KitchenTicket, LoyaltyTier, NormalizedExternalOrder, OrderRecord, Permission, Product, PurchaseRecord, RefundRecord,
-  Role, ShiftRecord, StockMovement
+  Role, ShiftRecord, StockMovement, StockTransfer
 } from "@cooffeup/shared";
 import { DELIVERY_PLATFORMS, DELIVERY_PLATFORM_IDS } from "@cooffeup/shared";
 import { hashPin } from "./security.js";
@@ -19,6 +19,8 @@ export interface StaffMember {
   grants: Permission[];
   revokes: Permission[];
   maxDiscountBps?: number;
+  /** Staff tied to one branch can only work there; without it they may choose any branch. */
+  branchId?: string;
   active: boolean;
   failedAttempts: number;
   lockedUntil?: string;
@@ -179,6 +181,29 @@ export interface Settings {
   branchName: string;
   /** Point-of-sale checkouts need an open shift so every sale is reconciled at drawer close. */
   requireOpenShift: boolean;
+  /** Branch whose stock fulfils online-store and delivery-app orders. */
+  fulfilmentBranchId: string;
+}
+
+export const MAIN_BRANCH_ID = "main";
+
+/** 2: stock is kept per branch (version 1 files are migrated into the main branch). */
+const SNAPSHOT_VERSION = 2;
+
+const MAP_KEYS = [
+  "products", "orders", "idempotency", "idempotencyFingerprints", "refundRequests", "loyalty", "cashMovements", "refunds", "customers",
+  "purchases", "expenses", "shifts", "staff", "tables", "kitchenTickets", "appointments", "heldCarts", "externalOrders", "ecommerce",
+  "delivery", "syncJobs", "webhooks", "webhookDeliveries", "sms", "branches", "stockLevels", "transfers"
+] as const;
+const ARRAY_KEYS = ["movements", "journal", "loyaltyLedger", "integrationLog", "audit"] as const;
+
+export interface StoreSnapshot {
+  version: number;
+  savedAt: string;
+  settings: Settings;
+  sequences: { receipt: number; journal: number };
+  maps: Partial<Record<(typeof MAP_KEYS)[number], Array<[unknown, unknown]>>>;
+  arrays: Partial<Record<(typeof ARRAY_KEYS)[number], unknown[]>>;
 }
 
 export class Store {
@@ -211,11 +236,16 @@ export class Store {
   webhookDeliveries = new Map<string, WebhookDelivery>();
   sms = new Map<string, SmsMessage>();
   integrationLog: IntegrationLogEntry[] = [];
+  branches = new Map<string, Branch>();
+  /** branchId → productId → quantity on hand. Product.stock always holds the total across branches. */
+  stockLevels = new Map<string, Record<string, number>>();
+  transfers = new Map<string, StockTransfer>();
   audit: AuditEntry[] = [];
   private receiptSequence = 1000;
   private journalSequence = 0;
 
   constructor(public settings: Settings) {
+    this.branches.set(MAIN_BRANCH_ID, { id: MAIN_BRANCH_ID, name: settings.branchName, kind: "permanent", active: true, syncToStore: true, createdAt: new Date(0).toISOString() });
     for (const platform of ["zid", "salla"] as const) this.ecommerce.set(platform, { platform, enabled: false });
     for (const platform of DELIVERY_PLATFORM_IDS) {
       this.delivery.set(platform, { platform, enabled: false, commissionBps: DELIVERY_PLATFORMS[platform].defaultCommissionBps, autoAccept: false });
@@ -225,8 +255,64 @@ export class Store {
   nextReceipt = () => `CU-${++this.receiptSequence}`;
   nextJournalNumber = () => ++this.journalSequence;
 
-  openShift(): ShiftRecord | undefined {
-    return [...this.shifts.values()].find((shift) => shift.status === "open");
+  /** Plain-JSON copy of every collection; secrets inside it stay encrypted as stored. */
+  snapshot(): StoreSnapshot {
+    const self = this as unknown as Record<string, unknown>;
+    return {
+      version: SNAPSHOT_VERSION,
+      savedAt: new Date().toISOString(),
+      settings: this.settings,
+      sequences: { receipt: this.receiptSequence, journal: this.journalSequence },
+      maps: Object.fromEntries(MAP_KEYS.map((key) => [key, [...(self[key] as Map<string, unknown>).entries()]])),
+      arrays: Object.fromEntries(ARRAY_KEYS.map((key) => [key, self[key] as unknown[]]))
+    };
+  }
+
+  /** Loads a snapshot; collections added after it was written simply start empty. */
+  restore(snapshot: StoreSnapshot) {
+    if (snapshot.version > SNAPSHOT_VERSION) throw new Error(`Data file version ${snapshot.version} is newer than this build supports`);
+    const self = this as unknown as Record<string, unknown>;
+    this.settings = { ...this.settings, ...snapshot.settings };
+    this.receiptSequence = snapshot.sequences.receipt;
+    this.journalSequence = snapshot.sequences.journal;
+    for (const key of MAP_KEYS) {
+      const entries = snapshot.maps[key];
+      if (entries) self[key] = new Map(entries);
+    }
+    for (const key of ARRAY_KEYS) {
+      const items = snapshot.arrays[key];
+      if (items) self[key] = items;
+    }
+    if (snapshot.version < 2) {
+      // Before branches, all stock lived in one place: it becomes the main branch's stock.
+      const levels: Record<string, number> = {};
+      for (const product of this.products.values()) levels[product.id] = product.stock;
+      this.stockLevels.set(MAIN_BRANCH_ID, levels);
+    }
+  }
+
+  /** The open shift of a branch; shifts recorded before branches existed belong to the main branch. */
+  openShift(branchId = MAIN_BRANCH_ID): ShiftRecord | undefined {
+    return [...this.shifts.values()].find((shift) => shift.status === "open" && (shift.branchId ?? MAIN_BRANCH_ID) === branchId);
+  }
+
+  stockAt(branchId: string, productId: string): number {
+    return this.stockLevels.get(branchId)?.[productId] ?? 0;
+  }
+
+  /** The single place stock changes, keeping the branch level and the product total in step. */
+  adjustStock(branchId: string, productId: string, delta: number) {
+    const levels = this.stockLevels.get(branchId) ?? {};
+    levels[productId] = (levels[productId] ?? 0) + delta;
+    this.stockLevels.set(branchId, levels);
+    const product = this.products.get(productId);
+    if (product) product.stock += delta;
+  }
+
+  /** What the online store may sell: stock at active branches that feed the store. */
+  syncedStock(productId: string): number {
+    return [...this.branches.values()].filter((branch) => branch.active && branch.syncToStore)
+      .reduce((sum, branch) => sum + Math.max(this.stockAt(branch.id, productId), 0), 0);
   }
 
   productBySku(sku: string): Product | undefined {
@@ -264,7 +350,11 @@ export function seedDemoData(store: Store) {
     { id: "croissant", sku: "FD-001", barcode: "6281000000042", nameAr: "كرواسون", nameEn: "Croissant", category: "المخبوزات", price: 1400, cost: 500, taxRateBps: 1500, stock: 40, reorderLevel: 10, active: true },
     { id: "coffee-beans", sku: "RT-001", barcode: "6281000000059", nameAr: "حبوب قهوة 250 جم", nameEn: "Coffee beans 250g", category: "منتجات للبيع", price: 6500, cost: 3500, taxRateBps: 1500, stock: 25, reorderLevel: 5, active: true }
   ];
-  for (const product of products) store.products.set(product.id, product);
+  for (const product of products) {
+    const initial = product.stock;
+    store.products.set(product.id, { ...product, stock: 0 });
+    store.adjustStock(MAIN_BRANCH_ID, product.id, initial);
+  }
   const tables = [["t1", "طاولة 1", "الصالة"], ["t2", "طاولة 2", "الصالة"], ["t3", "طاولة 3", "الصالة"], ["t4", "طاولة 4", "الجلسات الخارجية"], ["t5", "طاولة 5", "الجلسات الخارجية"]];
-  for (const [id, label, area] of tables) store.tables.set(id, { id, label, area, seats: 4, status: "available", orderIds: [] });
+  for (const [id, label, area] of tables) store.tables.set(id, { id, branchId: MAIN_BRANCH_ID, label, area, seats: 4, status: "available", orderIds: [] });
 }

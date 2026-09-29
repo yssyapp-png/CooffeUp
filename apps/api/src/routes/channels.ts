@@ -42,7 +42,7 @@ export function registerChannelRoutes(app: FastifyInstance, ctx: AppContext) {
     const lines = payload.items.map((item) => ({ productId: store.productBySku(item.sku)!.id, quantity: item.quantity, unitPrice: item.unitPrice, notes: item.notes }));
     const subtotal = lines.reduce((sum, line) => sum + line.unitPrice * line.quantity, 0);
     const input = { lines, orderDiscount: Math.min(payload.discount, subtotal) };
-    const options = { staff, channel: external.platform, externalOrderId: payload.externalId, allowNegativeStock: true };
+    const options = { staff, channel: external.platform, branchId: store.settings.fulfilmentBranchId, externalOrderId: payload.externalId, allowNegativeStock: true };
     // The platform collects the money, so the receivable equals our own VAT-correct total.
     const { totals } = priceOrder(ctx, input, options);
     const { order } = createOrder(ctx, { ...input, type: "delivery", payments: [{ method: "delivery_platform", amount: totals.total, reference: payload.externalId }] }, options);
@@ -73,7 +73,7 @@ export function registerChannelRoutes(app: FastifyInstance, ctx: AppContext) {
     if (body.status === "cancelled" && external.orderId) {
       const order = store.orders.get(external.orderId)!;
       const lines = order.lines.filter((line) => line.quantity > line.refundedQuantity).map((line) => ({ productId: line.productId, quantity: line.quantity - line.refundedQuantity }));
-      if (lines.length) refundOrder(ctx, order.id, { lines, method: "delivery_platform", reason: body.reason ?? "إلغاء من منصة التوصيل" }, actor(request));
+      if (lines.length) refundOrder(ctx, order.id, { lines, method: "delivery_platform", reason: body.reason ?? "إلغاء من منصة التوصيل" }, actor(request), order.branchId);
     }
     transition(external, body.status, actor(request).id);
     audit(ctx, request, "delivery.status", { type: "external_order", id: external.id }, { status: body.status });
@@ -128,7 +128,7 @@ export function registerChannelRoutes(app: FastifyInstance, ctx: AppContext) {
         return reply.code(202).send({ accepted: false, unknownSkus: unknown });
       }
       const lines = event.items.map((item) => ({ productId: store.productBySku(item.sku)!.id, quantity: item.quantity, unitPrice: item.unitPrice || undefined }));
-      const options = { staff: systemActor(platform), channel: platform, externalOrderId: event.externalId, allowNegativeStock: true };
+      const options = { staff: systemActor(platform), channel: platform, branchId: store.settings.fulfilmentBranchId, externalOrderId: event.externalId, allowNegativeStock: true };
       const { totals } = priceOrder(ctx, { lines }, options);
       const { order } = createOrder(ctx, { type: "delivery", lines, payments: [{ method: "online", amount: totals.total, reference: event.externalId }] }, options);
       store.idempotency.set(key, order);
@@ -140,7 +140,7 @@ export function registerChannelRoutes(app: FastifyInstance, ctx: AppContext) {
       return reply.code(202).send({ ignored: true });
     }
     const lines = existing.lines.filter((line) => line.quantity > line.refundedQuantity).map((line) => ({ productId: line.productId, quantity: line.quantity - line.refundedQuantity }));
-    if (lines.length) refundOrder(ctx, existing.id, { lines, method: "online", reason: `إلغاء من متجر ${platform}` }, systemActor(platform));
+    if (lines.length) refundOrder(ctx, existing.id, { lines, method: "online", reason: `إلغاء من متجر ${platform}` }, systemActor(platform), existing.branchId);
     log({ source: platform, externalId: event.externalId, event: "order.cancelled", status: "processed", orderId: existing.id });
     return reply.code(200).send({ data: { orderId: existing.id, status: existing.status } });
   });

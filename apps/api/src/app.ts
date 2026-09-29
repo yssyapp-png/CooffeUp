@@ -5,13 +5,15 @@ import rateLimit from "@fastify/rate-limit";
 import { loadConfig } from "./config.js";
 import { HttpError, type AppContext, type FetchLike } from "./context.js";
 import { registerAuthRoutes } from "./routes/auth.js";
+import { registerBranchRoutes } from "./routes/branches.js";
 import { registerChannelRoutes } from "./routes/channels.js";
 import { registerCustomerRoutes } from "./routes/customers.js";
 import { registerFinanceRoutes } from "./routes/finance.js";
 import { registerOperationsRoutes } from "./routes/operations.js";
 import { registerPosRoutes } from "./routes/pos.js";
+import { SnapshotPersistence } from "./persistence.js";
 import { Crypto } from "./security.js";
-import { addStaff, seedDemoData, Store } from "./store.js";
+import { addStaff, MAIN_BRANCH_ID, seedDemoData, Store } from "./store.js";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -35,7 +37,7 @@ export async function buildApp(options: BuildOptions = {}) {
   let closed = false;
   const ctx: AppContext = {
     config,
-    store: new Store({ businessType: config.businessType, sellerName: config.sellerName, sellerVat: config.sellerVat, branchName: "الفرع الرئيسي", requireOpenShift: config.requireOpenShift }),
+    store: new Store({ businessType: config.businessType, sellerName: config.sellerName, sellerVat: config.sellerVat, branchName: "الفرع الرئيسي", requireOpenShift: config.requireOpenShift, fulfilmentBranchId: MAIN_BRANCH_ID }),
     crypto: new Crypto(config.encryptionKey, config.authSecret),
     fetch: options.fetch ?? ((url, init) => fetch(url, init)),
     schedule(task, delay = 0) {
@@ -44,7 +46,8 @@ export async function buildApp(options: BuildOptions = {}) {
       const timer = setTimeout(() => {
         timers.delete(timer);
         if (delay === 0) dueNow -= 1;
-        const promise = task().catch((error) => app.log.error(error)).finally(() => running.delete(promise));
+        // Background work (deliveries, store sync) changes state too, so it is persisted afterwards.
+        const promise = task().catch((error) => app.log.error(error)).finally(() => { running.delete(promise); persistence?.markDirty(); });
         running.add(promise);
       }, delay);
       timer.unref();
@@ -58,13 +61,22 @@ export async function buildApp(options: BuildOptions = {}) {
     }
   };
   app.decorate("ctx", ctx);
+  const persistence = config.dataDir ? new SnapshotPersistence(config.dataDir, ctx.store, (error) => app.log.error({ err: error }, "failed to save data")) : undefined;
   app.addHook("onClose", async () => {
     closed = true;
     for (const timer of timers) clearTimeout(timer);
+    persistence?.flush();
+  });
+  // Any successful write request may have changed state; reads never do.
+  app.addHook("onResponse", async (request, reply) => {
+    if (persistence && request.method !== "GET" && reply.statusCode < 500) persistence.markDirty();
   });
 
-  if (config.seedDemoData) seedDemoData(ctx.store);
+  const loaded = persistence?.load() ?? false;
+  if (loaded) app.log.info({ dataDir: config.dataDir }, "loaded saved data");
+  else if (config.seedDemoData) seedDemoData(ctx.store);
   if (env.OWNER_PIN && ctx.store.staff.size === 0) addStaff(ctx.store, { id: "owner", name: "المالك", role: "owner", pin: env.OWNER_PIN });
+  if (!loaded) persistence?.markDirty();
 
   // Keep the raw body so webhook signatures can be verified byte-for-byte.
   const parseJson = app.getDefaultJsonParser("error", "error");
@@ -96,5 +108,6 @@ export async function buildApp(options: BuildOptions = {}) {
   registerFinanceRoutes(app, ctx);
   registerChannelRoutes(app, ctx);
   registerOperationsRoutes(app, ctx);
+  registerBranchRoutes(app, ctx);
   return app;
 }

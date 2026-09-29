@@ -4,14 +4,14 @@ import {
   type HeldCart, type Permission, type OrderRecord, type Product, type ShiftRecord, type SyncResult
 } from "@cooffeup/shared";
 import { z } from "zod";
-import { actor, audit, authenticate, fail, guarded, HttpError, newId, now, parse, type AppContext } from "../context.js";
+import { actor, audit, authenticate, branchOf, fail, guarded, HttpError, newId, now, parse, type AppContext } from "../context.js";
 import { emit } from "../services/events.js";
 import { renderInvoicePage } from "../services/invoice-page.js";
 import { postJournal } from "../services/ledger.js";
 import { createOrder, refundOrder, type OrderInput } from "../services/orders.js";
 import { shiftCashSummary, shiftReport } from "../services/shifts.js";
 import { sendSms } from "../services/sms.js";
-import type { CashMovement } from "../store.js";
+import { MAIN_BRANCH_ID, type CashMovement } from "../store.js";
 import { enqueueStoreSync } from "../services/store-sync.js";
 
 const money = z.number().int().nonnegative();
@@ -47,23 +47,31 @@ export function registerPosRoutes(app: FastifyInstance, ctx: AppContext) {
   const auth = authenticate(ctx);
   const guard = (...permissions: Permission[]) => guarded(ctx, ...permissions);
 
+  /** Products as seen from a branch: `stock` is that branch's quantity, `totalStock` the company-wide one. */
+  const atBranch = (product: Product, branchId: string) => ({ ...product, stock: store.stockAt(branchId, product.id), totalStock: product.stock });
+
   // ---------- Catalogue ----------
   app.get("/api/v1/products", { preHandler: auth }, async (request) => {
     const query = parse(z.object({ q: z.string().max(80).optional(), includeInactive: z.coerce.boolean().default(false) }), request.query);
     const term = query.q?.trim().toLowerCase();
     const data = [...store.products.values()].filter((product) => (query.includeInactive || product.active) &&
       (!term || `${product.nameAr} ${product.nameEn} ${product.sku} ${product.barcode ?? ""}`.toLowerCase().includes(term)));
-    return { data };
+    return { data: data.map((product) => atBranch(product, branchOf(request))) };
   });
 
   app.post("/api/v1/products", guard("inventory.manage"), async (request, reply) => {
-    const body = parse(productSchema, request.body);
+    const { stock, ...body } = parse(productSchema, request.body);
     if (store.productBySku(body.sku)) fail(409, "SKU_EXISTS");
-    const product: Product = { id: newId(), ...body };
+    const product: Product = { id: newId(), ...body, stock: 0 };
     store.products.set(product.id, product);
+    // Opening stock is placed at the branch the product was created from.
+    if (stock) {
+      store.adjustStock(branchOf(request), product.id, stock);
+      store.movements.push({ id: newId(), branchId: branchOf(request), productId: product.id, quantity: stock, reason: "adjustment", refId: "opening stock", createdAt: now() });
+    }
     enqueueStoreSync(ctx, [product.id]);
     audit(ctx, request, "product.created", { type: "product", id: product.id });
-    return reply.code(201).send({ data: product });
+    return reply.code(201).send({ data: atBranch(product, branchOf(request)) });
   });
 
   app.patch<{ Params: { id: string } }>("/api/v1/products/:id", guard("inventory.manage"), async (request) => {
@@ -72,17 +80,17 @@ export function registerPosRoutes(app: FastifyInstance, ctx: AppContext) {
     Object.assign(product, body);
     enqueueStoreSync(ctx, [product.id]);
     audit(ctx, request, "product.updated", { type: "product", id: product.id }, body);
-    return { data: product };
+    return { data: atBranch(product, branchOf(request)) };
   });
 
   app.post<{ Params: { id: string } }>("/api/v1/products/:id/adjust", guard("inventory.manage"), async (request) => {
     const product = store.products.get(request.params.id) ?? fail(404, "PRODUCT_NOT_FOUND");
     const body = parse(z.object({ quantity: z.number().int().refine((value) => value !== 0), reason: z.string().min(2).max(200) }), request.body);
-    product.stock += body.quantity;
-    store.movements.push({ id: newId(), productId: product.id, quantity: body.quantity, reason: "adjustment", refId: body.reason, createdAt: now() });
+    store.adjustStock(branchOf(request), product.id, body.quantity);
+    store.movements.push({ id: newId(), branchId: branchOf(request), productId: product.id, quantity: body.quantity, reason: "adjustment", refId: body.reason, createdAt: now() });
     enqueueStoreSync(ctx, [product.id]);
-    audit(ctx, request, "stock.adjusted", { type: "product", id: product.id }, body);
-    return { data: product };
+    audit(ctx, request, "stock.adjusted", { type: "product", id: product.id }, { ...body, branchId: branchOf(request) });
+    return { data: atBranch(product, branchOf(request)) };
   });
 
   // ---------- Orders ----------
@@ -104,7 +112,7 @@ export function registerPosRoutes(app: FastifyInstance, ctx: AppContext) {
       if (store.idempotencyFingerprints.get(key) !== fingerprint(body)) return reply.code(409).send({ error: "IDEMPOTENCY_KEY_REUSED" });
       return reply.code(200).send({ data: existing, change: existing.change, replayed: true });
     }
-    const { order, change } = createOrder(ctx, body, { staff: actor(request), channel: "pos" });
+    const { order, change } = createOrder(ctx, body, { staff: actor(request), channel: "pos", branchId: branchOf(request) });
     store.idempotency.set(key, order);
     store.idempotencyFingerprints.set(key, fingerprint(body));
     if (order.lines.some((line) => line.priceOverride)) audit(ctx, request, "order.price_override", { type: "order", id: order.id });
@@ -125,7 +133,7 @@ export function registerPosRoutes(app: FastifyInstance, ctx: AppContext) {
       if (previous.fingerprint !== print) return reply.code(409).send({ error: "IDEMPOTENCY_KEY_REUSED" });
       return reply.code(200).send({ data: store.refunds.get(previous.refundId), replayed: true });
     }
-    const refund = refundOrder(ctx, request.params.id, body, actor(request));
+    const refund = refundOrder(ctx, request.params.id, body, actor(request), branchOf(request));
     if (key) store.refundRequests.set(key, { fingerprint: print, refundId: refund.id });
     audit(ctx, request, "order.refunded", { type: "order", id: request.params.id }, { total: refund.total, reason: body.reason });
     return reply.code(201).send({ data: refund });
@@ -148,7 +156,7 @@ export function registerPosRoutes(app: FastifyInstance, ctx: AppContext) {
       }
       try {
         const { order } = createOrder(ctx, entry.payload as OrderInput, {
-          staff: actor(request), channel: "pos", offline: { deviceId: body.deviceId, localReceipt: entry.localReceipt, capturedAt: entry.capturedAt }
+          staff: actor(request), channel: "pos", branchId: branchOf(request), offline: { deviceId: body.deviceId, localReceipt: entry.localReceipt, capturedAt: entry.capturedAt }
         });
         store.idempotency.set(entry.id, order);
         store.idempotencyFingerprints.set(entry.id, fingerprint(entry.payload));
@@ -178,12 +186,14 @@ export function registerPosRoutes(app: FastifyInstance, ctx: AppContext) {
   });
 
   // ---------- Shifts & cash drawer ----------
-  app.get("/api/v1/shifts/current", guard("shifts.manage"), async () => {
-    const shift = store.openShift();
+  app.get("/api/v1/shifts/current", guard("shifts.manage"), async (request) => {
+    const shift = store.openShift(branchOf(request));
     return { data: shift ? { ...shift, summary: shiftCashSummary(ctx, shift) } : null, requireOpenShift: store.settings.requireOpenShift };
   });
 
-  app.get("/api/v1/shifts", guard("shifts.manage"), async () => ({ data: [...store.shifts.values()].slice(-50).reverse() }));
+  app.get("/api/v1/shifts", guard("shifts.manage"), async (request) => ({
+    data: [...store.shifts.values()].filter((shift) => (shift.branchId ?? MAIN_BRANCH_ID) === branchOf(request)).slice(-50).reverse()
+  }));
 
   app.get<{ Params: { id: string } }>("/api/v1/shifts/:id/report", guard("shifts.manage"), async (request) => {
     const shift = store.shifts.get(request.params.id) ?? fail(404, "SHIFT_NOT_FOUND");
@@ -212,8 +222,8 @@ export function registerPosRoutes(app: FastifyInstance, ctx: AppContext) {
 
   app.post("/api/v1/shifts/open", guard("shifts.manage"), async (request, reply) => {
     const body = parse(z.object({ openingFloat: money }), request.body);
-    if (store.openShift()) fail(409, "SHIFT_ALREADY_OPEN");
-    const shift: ShiftRecord = { id: newId(), staffId: actor(request).id, status: "open", openedAt: now(), openingFloat: body.openingFloat };
+    if (store.openShift(branchOf(request))) fail(409, "SHIFT_ALREADY_OPEN");
+    const shift: ShiftRecord = { id: newId(), branchId: branchOf(request), staffId: actor(request).id, status: "open", openedAt: now(), openingFloat: body.openingFloat };
     store.shifts.set(shift.id, shift);
     audit(ctx, request, "shift.opened", { type: "shift", id: shift.id }, body);
     return reply.code(201).send({ data: shift });

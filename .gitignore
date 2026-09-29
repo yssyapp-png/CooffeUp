@@ -7,3 +7,6 @@ dist/
 coverage/
 .expo/
 *.tsbuildinfo
+
+# Local data snapshot and generated development secrets
+apps/api/data/

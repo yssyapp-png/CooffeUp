@@ -17,7 +17,7 @@ export function enqueueStoreSync(ctx: AppContext, productIds: Iterable<string>) 
         if (job.platform === connection.platform && job.sku === product.sku && job.status === "pending") ctx.store.syncJobs.delete(job.id);
       }
       const job: SyncJob = {
-        id: newId(), platform: connection.platform, sku: product.sku, quantity: Math.max(product.stock, 0), price: product.price,
+        id: newId(), platform: connection.platform, sku: product.sku, quantity: ctx.store.syncedStock(product.id), price: product.price,
         status: "pending", attempts: 0, createdAt: now(), updatedAt: now()
       };
       ctx.store.syncJobs.set(job.id, job);

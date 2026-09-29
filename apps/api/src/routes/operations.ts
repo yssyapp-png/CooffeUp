@@ -1,10 +1,11 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import {
   APPOINTMENT_STATUS_LABELS, KITCHEN_STATUS_LABELS, TABLE_STATUS_LABELS, canTransitionAppointment, canTransitionKitchen, findAppointmentConflict,
   riyadhDate, type Appointment, type AppointmentStatus, type DiningTable, type KitchenStatus, type Permission, type TableStatus
 } from "@cooffeup/shared";
 import { z } from "zod";
-import { actor, audit, fail, guarded, newId, now, parse, type AppContext } from "../context.js";
+import { MAIN_BRANCH_ID } from "../store.js";
+import { actor, audit, branchOf, fail, guarded, newId, now, parse, type AppContext } from "../context.js";
 
 const keys = <T extends string>(record: Record<T, string>) => Object.keys(record) as [T, ...T[]];
 
@@ -18,11 +19,15 @@ export function registerOperationsRoutes(app: FastifyInstance, ctx: AppContext) 
     return { ...table, statusLabel: TABLE_STATUS_LABELS[table.status], openTotal: orders.reduce((sum, order) => sum + order.totals.total, 0), orderCount: orders.length };
   };
 
-  app.get("/api/v1/tables", guard("tables.manage"), async () => ({ data: [...store.tables.values()].map(presentTable) }));
+  const inBranch = (branchId: string | undefined, request: FastifyRequest) => (branchId ?? MAIN_BRANCH_ID) === branchOf(request);
+
+  app.get("/api/v1/tables", guard("tables.manage"), async (request) => ({
+    data: [...store.tables.values()].filter((table) => inBranch(table.branchId, request)).map(presentTable)
+  }));
 
   app.post("/api/v1/tables", guard("tables.manage"), async (request, reply) => {
     const body = parse(z.object({ label: z.string().min(1).max(40), area: z.string().min(1).max(40), seats: z.number().int().min(1).max(40) }), request.body);
-    const table: DiningTable = { id: newId(), ...body, status: "available", orderIds: [] };
+    const table: DiningTable = { id: newId(), branchId: branchOf(request), ...body, status: "available", orderIds: [] };
     store.tables.set(table.id, table);
     return reply.code(201).send({ data: presentTable(table) });
   });
@@ -43,7 +48,7 @@ export function registerOperationsRoutes(app: FastifyInstance, ctx: AppContext) 
   app.get("/api/v1/kitchen/tickets", guard("kitchen.view"), async (request) => {
     const query = parse(z.object({ includeDone: z.coerce.boolean().default(false) }), request.query);
     const data = [...store.kitchenTickets.values()]
-      .filter((ticket) => query.includeDone || (ticket.status !== "served" && ticket.status !== "cancelled"))
+      .filter((ticket) => inBranch(ticket.branchId, request) && (query.includeDone || (ticket.status !== "served" && ticket.status !== "cancelled")))
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
       .map((ticket) => ({ ...ticket, statusLabel: KITCHEN_STATUS_LABELS[ticket.status] }));
     return { data };

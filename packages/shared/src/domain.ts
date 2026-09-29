@@ -65,6 +65,7 @@ export interface OrderRecord {
   change: Money;
   totals: Totals;
   cashierId: string;
+  branchId?: string;
   customerId?: string;
   tableId?: string;
   shiftId?: string;
@@ -94,6 +95,7 @@ export type PaidFrom = "cash" | "bank" | "payable";
 
 export interface PurchaseRecord {
   id: string;
+  branchId?: string;
   supplierName: string;
   supplierVat?: string;
   invoiceNumber?: string;
@@ -129,10 +131,35 @@ export interface ExpenseRecord {
   createdAt: string;
 }
 
-export type StockMovementReason = "sale" | "refund" | "purchase" | "adjustment" | "online_sale" | "delivery_sale";
+export type StockMovementReason = "sale" | "refund" | "purchase" | "adjustment" | "online_sale" | "delivery_sale" | "transfer_in" | "transfer_out";
+
+/** A permanent store or a temporary point of sale such as an exhibition booth. */
+export interface Branch {
+  id: string;
+  name: string;
+  kind: "permanent" | "temporary";
+  active: boolean;
+  /** Stock at this branch counts towards what the online store may sell. */
+  syncToStore: boolean;
+  startsAt?: string;
+  endsAt?: string;
+  address?: string;
+  createdAt: string;
+}
+
+export interface StockTransfer {
+  id: string;
+  fromBranchId: string;
+  toBranchId: string;
+  lines: Array<{ productId: string; quantity: number }>;
+  note?: string;
+  staffId: string;
+  createdAt: string;
+}
 
 export interface StockMovement {
   id: string;
+  branchId?: string;
   productId: string;
   quantity: number;
   reason: StockMovementReason;
@@ -142,6 +169,7 @@ export interface StockMovement {
 
 export interface ShiftRecord {
   id: string;
+  branchId?: string;
   staffId: string;
   status: "open" | "closed";
   openedAt: string;
@@ -158,6 +186,7 @@ export type KitchenStatus = "new" | "preparing" | "ready" | "served" | "cancelle
 
 export interface KitchenTicket {
   id: string;
+  branchId?: string;
   orderId: string;
   receiptNumber: string;
   channel: SalesChannel;

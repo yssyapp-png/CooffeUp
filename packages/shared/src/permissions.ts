@@ -4,7 +4,7 @@ export const PERMISSIONS = [
   "inventory.manage", "purchases.manage", "expenses.manage",
   "accounting.view", "accounting.manage", "reports.view",
   "delivery.manage", "tables.manage", "kitchen.view", "appointments.manage",
-  "shifts.manage", "integrations.manage", "staff.manage", "invoices.send"
+  "shifts.manage", "integrations.manage", "staff.manage", "invoices.send", "branches.manage"
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -32,7 +32,8 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   "shifts.manage": "فتح الورديات وإغلاق الصندوق",
   "integrations.manage": "إدارة الربط مع المتاجر والمنصات",
   "staff.manage": "إدارة الموظفين والصلاحيات",
-  "invoices.send": "إرسال الفواتير برسائل SMS"
+  "invoices.send": "إرسال الفواتير برسائل SMS",
+  "branches.manage": "إدارة الفروع والبوثات ونقل المخزون"
 };
 
 export const ROLE_LABELS: Record<Role, string> = {

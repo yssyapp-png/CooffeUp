@@ -1,10 +1,10 @@
 import {
   calculateLine, calculateTotals, discountAllowed, distributeDiscount, FREE_DRINK_POINTS, hasFeature, maxDiscountBps, refundEntryLines, refundSlice, saleEntryLines,
-  type CartLine, type Totals, type OrderLineRecord, type OrderRecord, type OrderType, type PaymentMethod, type RefundRecord, type SalesChannel
+  type Branch, type CartLine, type Totals, type OrderLineRecord, type OrderRecord, type OrderType, type PaymentMethod, type RefundRecord, type SalesChannel
 } from "@cooffeup/shared";
 import { accessOf, fail, newId, now, staffCan, type AppContext } from "../context.js";
 import { randomToken } from "../security.js";
-import type { StaffMember } from "../store.js";
+import { MAIN_BRANCH_ID, type StaffMember } from "../store.js";
 import { emit } from "./events.js";
 import { postJournal } from "./ledger.js";
 import { applyOrderLoyalty, reverseOrderLoyalty } from "./loyalty.js";
@@ -25,11 +25,20 @@ export interface OrderInput {
 export interface OrderOptions {
   staff: StaffMember;
   channel: SalesChannel;
+  /** Branch whose stock, shift and kitchen the order uses. */
+  branchId: string;
   externalOrderId?: string;
   /** Sales captured offline already happened, so they are recorded even if stock went negative. */
   offline?: { deviceId: string; localReceipt: string; capturedAt: string };
   /** Orders already accepted by an online store must be recorded even when local stock is short. */
   allowNegativeStock?: boolean;
+}
+
+/** Temporary branches (booths) only trade between their start and end dates. */
+export function branchIsOpen(branch: Branch, at = new Date()) {
+  if (!branch.active) return false;
+  const time = at.toISOString();
+  return (!branch.startsAt || time >= branch.startsAt) && (!branch.endsAt || time <= branch.endsAt);
 }
 
 const STOCK_REASON: Record<string, "sale" | "online_sale" | "delivery_sale"> = { pos: "sale", zid: "online_sale", salla: "online_sale" };
@@ -46,8 +55,9 @@ export function priceOrder(ctx: AppContext, input: Pick<OrderInput, "lines" | "o
     if (!product?.active) return fail(404, "PRODUCT_NOT_FOUND", { productId: line.productId });
     const totalRequested = (requested.get(product.id) ?? 0) + line.quantity;
     requested.set(product.id, totalRequested);
-    if (product.stock < totalRequested) {
-      if (!options.offline && !options.allowNegativeStock) fail(409, "INSUFFICIENT_STOCK", { productId: product.id, available: product.stock });
+    const available = store.stockAt(options.branchId, product.id);
+    if (available < totalRequested) {
+      if (!options.offline && !options.allowNegativeStock) fail(409, "INSUFFICIENT_STOCK", { productId: product.id, available });
       stockConflict = true;
     }
     const unitPrice = line.unitPrice ?? product.price;
@@ -89,7 +99,10 @@ export function priceOrder(ctx: AppContext, input: Pick<OrderInput, "lines" | "o
 export function createOrder(ctx: AppContext, input: OrderInput, options: OrderOptions): { order: OrderRecord; change: number } {
   const { store } = ctx;
   const fromPos = options.channel === "pos";
-  const shift = store.openShift();
+  const branch = store.branches.get(options.branchId) ?? fail(404, "BRANCH_NOT_FOUND");
+  // Offline sales already happened, so only live sales are held to the branch's opening window.
+  if (!options.offline && !branchIsOpen(branch)) fail(409, "BRANCH_CLOSED");
+  const shift = store.openShift(branch.id);
   // Offline sales are replayed after the fact and platform orders are not rung up at the till.
   if (fromPos && !options.offline && store.settings.requireOpenShift && !shift) fail(409, "SHIFT_REQUIRED");
   if (input.customerId && !store.customers.has(input.customerId)) fail(404, "CUSTOMER_NOT_FOUND");
@@ -104,6 +117,7 @@ export function createOrder(ctx: AppContext, input: OrderInput, options: OrderOp
   const table = input.tableId ? store.tables.get(input.tableId) : undefined;
   if (input.tableId && !table) fail(404, "TABLE_NOT_FOUND");
   if (table && input.type !== "dine_in") fail(422, "TABLE_REQUIRES_DINE_IN");
+  if (table && (table.branchId ?? MAIN_BRANCH_ID) !== branch.id) fail(422, "TABLE_IN_OTHER_BRANCH");
 
   const createdAt = now();
   const orderId = newId();
@@ -122,13 +136,13 @@ export function createOrder(ctx: AppContext, input: OrderInput, options: OrderOp
   const lineEntries = saleEntryLines({ payments: input.payments, change, taxable: totals.taxable, tax: totals.tax, cost });
 
   for (const line of recordLines) {
-    store.products.get(line.productId)!.stock -= line.quantity;
-    store.movements.push({ id: newId(), productId: line.productId, quantity: -line.quantity, reason: STOCK_REASON[options.channel] ?? "delivery_sale", refId: orderId, createdAt });
+    store.adjustStock(branch.id, line.productId, -line.quantity);
+    store.movements.push({ id: newId(), branchId: branch.id, productId: line.productId, quantity: -line.quantity, reason: STOCK_REASON[options.channel] ?? "delivery_sale", refId: orderId, createdAt });
   }
 
   const order: OrderRecord = {
     id: orderId, receiptNumber: store.nextReceipt(), type: input.type, channel: options.channel, status: "paid",
-    lines: recordLines, payments: input.payments, change, totals, cashierId: options.staff.id,
+    lines: recordLines, payments: input.payments, change, totals, cashierId: options.staff.id, branchId: branch.id,
     customerId: input.customerId, tableId: input.tableId, shiftId: shift?.id, externalOrderId: options.externalOrderId,
     offline: options.offline ? { ...options.offline, stockConflict } : undefined,
     invoiceToken: randomToken(), createdAt
@@ -145,7 +159,7 @@ export function createOrder(ctx: AppContext, input: OrderInput, options: OrderOp
   if (hasFeature(store.settings.businessType, "kitchen")) {
     const ticketId = newId();
     store.kitchenTickets.set(ticketId, {
-      id: ticketId, orderId: order.id, receiptNumber: order.receiptNumber, channel: order.channel, orderType: order.type, tableLabel: table?.label,
+      id: ticketId, branchId: branch.id, orderId: order.id, receiptNumber: order.receiptNumber, channel: order.channel, orderType: order.type, tableLabel: table?.label,
       items: recordLines.map((line) => ({ name: line.name, quantity: line.quantity, notes: line.notes })), status: "new", createdAt
     });
   }
@@ -171,7 +185,8 @@ function refundableByMethod(ctx: AppContext, order: OrderRecord) {
   return available;
 }
 
-export function refundOrder(ctx: AppContext, orderId: string, input: RefundInput, staff: StaffMember): RefundRecord {
+/** Refunds happen at `branchId`: returned goods go back into its stock and cash leaves its drawer. */
+export function refundOrder(ctx: AppContext, orderId: string, input: RefundInput, staff: StaffMember, branchId = MAIN_BRANCH_ID): RefundRecord {
   const { store } = ctx;
   const order = store.orders.get(orderId);
   if (!order) return fail(404, "ORDER_NOT_FOUND");
@@ -196,7 +211,7 @@ export function refundOrder(ctx: AppContext, orderId: string, input: RefundInput
   if (!method || (available.get(method) ?? 0) < total) {
     fail(409, "REFUND_METHOD_MISMATCH", { available: Object.fromEntries(available) });
   }
-  const shift = store.openShift();
+  const shift = store.openShift(branchId);
   if (method === "cash" && order.channel === "pos") {
     if (store.settings.requireOpenShift && !shift) fail(409, "SHIFT_REQUIRED");
     if (shift) {
@@ -207,8 +222,8 @@ export function refundOrder(ctx: AppContext, orderId: string, input: RefundInput
 
   for (const { line, quantity } of refundLines) {
     line.refundedQuantity += quantity;
-    store.products.get(line.productId)!.stock += quantity;
-    store.movements.push({ id: newId(), productId: line.productId, quantity, reason: "refund", refId: order.id, createdAt });
+    store.adjustStock(branchId, line.productId, quantity);
+    store.movements.push({ id: newId(), branchId, productId: line.productId, quantity, reason: "refund", refId: order.id, createdAt });
   }
   order.status = order.lines.every((line) => line.refundedQuantity === line.quantity) ? "refunded" : "partially_refunded";
   const refund: RefundRecord = {
