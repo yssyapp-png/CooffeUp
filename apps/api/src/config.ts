@@ -16,7 +16,8 @@ const schema = z.object({
   SMS_HTTP_URL: z.string().url().optional(),
   SMS_HTTP_TOKEN: z.string().optional(),
   SMS_SENDER: z.string().default("CooffeUp"),
-  SEED_DEMO_DATA: z.enum(["true", "false"]).default("true")
+  SEED_DEMO_DATA: z.enum(["true", "false"]).default("true"),
+  REQUIRE_OPEN_SHIFT: z.enum(["true", "false"]).default("true")
 });
 
 export interface AppConfig {
@@ -31,6 +32,7 @@ export interface AppConfig {
   sellerVat: string;
   sms: { provider: "log" | "http"; url?: string; token?: string; sender: string };
   seedDemoData: boolean;
+  requireOpenShift: boolean;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -53,6 +55,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     sellerName: parsed.SELLER_NAME,
     sellerVat: parsed.SELLER_VAT,
     sms: { provider: parsed.SMS_PROVIDER, url: parsed.SMS_HTTP_URL, token: parsed.SMS_HTTP_TOKEN, sender: parsed.SMS_SENDER },
-    seedDemoData: parsed.SEED_DEMO_DATA === "true" && !production
+    seedDemoData: parsed.SEED_DEMO_DATA === "true" && !production,
+    requireOpenShift: parsed.REQUIRE_OPEN_SHIFT === "true"
   };
 }

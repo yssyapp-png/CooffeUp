@@ -63,7 +63,8 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext) {
       businessType: z.enum(Object.keys(SECTOR_PROFILES) as [keyof typeof SECTOR_PROFILES, ...Array<keyof typeof SECTOR_PROFILES>]).optional(),
       sellerName: z.string().min(2).max(120).optional(),
       sellerVat: z.string().regex(/^3\d{13}3$/).optional(),
-      branchName: z.string().min(1).max(120).optional()
+      branchName: z.string().min(1).max(120).optional(),
+      requireOpenShift: z.boolean().optional()
     }), request.body);
     Object.assign(store.settings, body);
     audit(ctx, request, "settings.updated", { type: "settings" }, body);

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { formatSar, type CustomerInsights, type PromotionSuggestion } from "@cooffeup/shared";
+import { formatSar, FREE_DRINK_POINTS, type CustomerInsights, type LoyaltySnapshot, type PromotionSuggestion } from "@cooffeup/shared";
 import { Eye, Gift, UserPlus } from "lucide-react";
 import { api } from "../api";
 import { Notice, PageHeader, useAction, useLoad } from "../components";
@@ -14,6 +14,7 @@ interface CustomerView {
   marketingConsent: boolean;
   piiRevealed: boolean;
   insights: CustomerInsights & { segmentLabel: string };
+  loyalty: LoyaltySnapshot & { tierLabel: string };
   suggestions?: PromotionSuggestion[];
 }
 
@@ -45,9 +46,9 @@ export function Customers() {
     <div className="split">
       <div className="card">
         <div className="table-wrap"><table>
-          <thead><tr><th>العميل</th><th>الجوال</th><th>الشريحة</th><th>الزيارات</th><th>متوسط الفاتورة</th><th>آخر زيارة</th></tr></thead>
+          <thead><tr><th>العميل</th><th>الجوال</th><th>الشريحة</th><th>النقاط</th><th>الزيارات</th><th>متوسط الفاتورة</th><th>آخر زيارة</th></tr></thead>
           <tbody>{(list.data?.data ?? []).map((customer) => <tr key={customer.id} className="clickable" onClick={() => open(customer.id)}>
-            <td>{customer.name}</td><td dir="ltr">{customer.phone ?? "—"}</td><td><span className={`segment ${customer.insights.segment}`}>{customer.insights.segmentLabel}</span></td>
+            <td>{customer.name}</td><td dir="ltr">{customer.phone ?? "—"}</td><td><span className={`segment ${customer.insights.segment}`}>{customer.insights.segmentLabel}</span></td><td className="num">{customer.loyalty.points}</td>
             <td className="num">{customer.insights.visits}</td><td className="num">{formatSar(customer.insights.averageTicket)}</td>
             <td>{customer.insights.daysSinceLastVisit === undefined ? "—" : `قبل ${customer.insights.daysSinceLastVisit} يوم`}</td>
           </tr>)}</tbody>
@@ -64,9 +65,12 @@ export function Customers() {
             <div><small>الزيارات</small><b>{selected.insights.visits}</b></div>
             <div><small>إجمالي المشتريات</small><b>{formatSar(selected.insights.totalSpent)}</b></div>
             <div><small>متوسط الفاتورة</small><b>{formatSar(selected.insights.averageTicket)}</b></div>
+            <div><small>نقاط الولاء</small><b>{selected.loyalty.points}</b></div>
+            <div><small>المستوى</small><b>{selected.loyalty.tierLabel}</b></div>
             <div><small>يزورك كل</small><b>{selected.insights.averageDaysBetweenVisits ? `${selected.insights.averageDaysBetweenVisits} يوم` : "—"}</b></div>
           </div>
           {selected.insights.favoriteProducts.length > 0 && <p>المفضّل: {selected.insights.favoriteProducts.map((product) => `${product.name} (${product.quantity})`).join("، ")}</p>}
+          {selected.loyalty.freeDrinksAvailable > 0 && <Notice tone="success">يستحق {selected.loyalty.freeDrinksAvailable} مشروبًا مجانيًا ({FREE_DRINK_POINTS} نقطة لكل مشروب)</Notice>}
           <h4><Gift size={15} /> عروض مقترحة</h4>
           {selected.suggestions?.length ? <ul className="suggestions">{selected.suggestions.map((suggestion) => <li key={suggestion.code}><b>{suggestion.titleAr}</b><small>{suggestion.reasonAr}</small></li>)}</ul> : <p className="muted">لا توجد اقتراحات حاليًا</p>}
           {!selected.marketingConsent && <Notice tone="warning">العميل لم يوافق على الرسائل التسويقية</Notice>}

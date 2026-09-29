@@ -27,6 +27,8 @@ export interface Product {
   stock: number;
   reorderLevel?: number;
   active: boolean;
+  /** Drinks that can be redeemed with loyalty points. */
+  rewardEligible?: boolean;
 }
 
 export interface OrderLineRecord {
@@ -68,6 +70,8 @@ export interface OrderRecord {
   shiftId?: string;
   externalOrderId?: string;
   offline?: { deviceId: string; localReceipt: string; capturedAt: string; stockConflict: boolean };
+  /** Loyalty points earned on this order and the reward redeemed on it, if any. */
+  loyalty?: { earned: number; redeemed?: "free_drink"; redeemedPoints?: number };
   /** Unguessable token for the public e-invoice link sent by SMS. */
   invoiceToken: string;
   createdAt: string;

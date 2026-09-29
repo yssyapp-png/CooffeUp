@@ -35,7 +35,7 @@ export async function buildApp(options: BuildOptions = {}) {
   let closed = false;
   const ctx: AppContext = {
     config,
-    store: new Store({ businessType: config.businessType, sellerName: config.sellerName, sellerVat: config.sellerVat, branchName: "الفرع الرئيسي" }),
+    store: new Store({ businessType: config.businessType, sellerName: config.sellerName, sellerVat: config.sellerVat, branchName: "الفرع الرئيسي", requireOpenShift: config.requireOpenShift }),
     crypto: new Crypto(config.encryptionKey, config.authSecret),
     fetch: options.fetch ?? ((url, init) => fetch(url, init)),
     schedule(task, delay = 0) {
@@ -86,6 +86,10 @@ export async function buildApp(options: BuildOptions = {}) {
   await app.register(cors, { origin: config.webOrigin, credentials: true, methods: ["GET", "POST", "PUT", "PATCH", "DELETE"] });
 
   app.get("/health", async () => ({ ok: true, service: "cooffeup-api", time: new Date().toISOString() }));
+  // States plainly what still blocks real-money use, so no deployment mistakes this build for production-ready.
+  app.get("/api/v1/operations/readiness", async () => ({
+    data: { productionReady: false, persistence: "memory", authentication: "staff-sessions", blockers: ["PERSISTENT_DATABASE_REQUIRED"] }
+  }));
   registerAuthRoutes(app, ctx);
   registerPosRoutes(app, ctx);
   registerCustomerRoutes(app, ctx);

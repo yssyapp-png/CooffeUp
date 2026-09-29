@@ -8,10 +8,12 @@ import type { OrderType, PaymentMethod } from "./domain.js";
 
 export interface OfflineOrderPayload {
   type: OrderType;
-  lines: Array<{ productId: string; quantity: number; discount?: number; notes?: string }>;
+  lines: Array<{ productId: string; quantity: number; discount?: number; unitPrice?: number; notes?: string }>;
+  orderDiscount?: number;
   payments: Array<{ method: PaymentMethod; amount: number; reference?: string }>;
   customerId?: string;
   tableId?: string;
+  redeemReward?: "free_drink";
 }
 
 export interface OutboxEntry {

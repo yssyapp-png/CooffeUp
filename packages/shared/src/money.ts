@@ -71,6 +71,29 @@ export function distributeDiscount(lines: CartLine[], amount: Money): CartLine[]
   return lines.map((line, index) => ({ ...line, discount: (line.discount ?? 0) + parts[index] }));
 }
 
+/**
+ * Amount for refunding `quantity` more units of a sold line, computed as the difference between
+ * cumulative totals so repeated partial refunds never drift from the original line by a halala.
+ */
+export function refundSlice(line: { unitPrice: Money; quantity: number; discount: Money; taxRateBps: number }, alreadyRefunded: number, quantity: number) {
+  const cumulative = (units: number) => {
+    const discount = Math.round((line.discount * units) / line.quantity);
+    const taxable = line.unitPrice * units - discount;
+    return { taxable, tax: Math.round((taxable * line.taxRateBps) / 10_000) };
+  };
+  // cumulative(line.quantity) equals the original line exactly, so a full refund returns every halala.
+  const before = cumulative(alreadyRefunded);
+  const after = cumulative(alreadyRefunded + quantity);
+  return { taxable: after.taxable - before.taxable, tax: after.tax - before.tax };
+}
+
+/** Strict SAR parser for user input ("12", "12.5", "12.50"); returns null for anything else. */
+export function parseSar(value: string): Money | null {
+  const match = /^(\d{1,7})(?:\.(\d{1,2}))?$/.exec(value.trim());
+  if (!match) return null;
+  return Number(match[1]) * 100 + Number((match[2] ?? "").padEnd(2, "0"));
+}
+
 export const sarToHalalas = (sar: number) => Math.round(sar * 100);
 
 export const formatSar = (halalas: Money, locale = "ar-SA") =>

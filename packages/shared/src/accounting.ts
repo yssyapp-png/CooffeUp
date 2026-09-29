@@ -12,7 +12,7 @@ export interface Account {
 
 export const CHART_OF_ACCOUNTS: readonly Account[] = [
   { code: "1101", nameAr: "الصندوق (النقدية)", nameEn: "Cash on hand", type: "asset" },
-  { code: "1102", nameAr: "البنك", nameEn: "Bank", type: "asset" },
+  { code: "1102", nameAr: "البنك والخزنة", nameEn: "Bank and safe", type: "asset" },
   { code: "1103", nameAr: "مستحقات الشبكة ومدى", nameEn: "Card clearing", type: "asset" },
   { code: "1104", nameAr: "مستحقات المنصات والمتاجر الإلكترونية", nameEn: "Platform receivables", type: "asset" },
   { code: "1201", nameAr: "المخزون", nameEn: "Inventory", type: "asset" },
@@ -82,7 +82,8 @@ export function finalizeLines(lines: JournalLine[]): JournalLine[] {
     } else merged.set(key, { ...line });
   }
   const result = [...merged.values()];
-  assertBalanced(result);
+  // A fully discounted order with no cost moves no money, so it produces no entry at all.
+  if (result.length > 0) assertBalanced(result);
   return result;
 }
 
@@ -140,6 +141,9 @@ export function purchaseEntryLines(input: { net: Money; vat: Money; paidFrom: Pa
 export function expenseEntryLines(input: { category: ExpenseCategory; net: Money; vat: Money; paidFrom: PaidFrom }): JournalLine[] {
   return finalizeLines([dr(EXPENSE_ACCOUNTS[input.category], input.net), dr("1301", input.vat), cr(PAID_FROM_ACCOUNTS[input.paidFrom], input.net + input.vat)]);
 }
+
+/** Moves money between two asset accounts, e.g. a cash drop from the drawer to the safe or bank. */
+export const cashTransferLines = (to: string, from: string, amount: Money): JournalLine[] => finalizeLines([dr(to, amount), cr(from, amount)]);
 
 /** Records the difference between counted and expected cash when a shift closes. */
 export function cashVarianceLines(variance: Money): JournalLine[] {

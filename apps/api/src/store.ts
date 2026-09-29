@@ -1,6 +1,6 @@
 import type {
   Appointment, BusinessType, DeliveryPlatform, DiningTable, EcommercePlatform, ExpenseRecord, ExternalOrderStatus, HeldCart,
-  JournalEntry, KitchenTicket, NormalizedExternalOrder, OrderRecord, Permission, Product, PurchaseRecord, RefundRecord,
+  JournalEntry, KitchenTicket, LoyaltyTier, NormalizedExternalOrder, OrderRecord, Permission, Product, PurchaseRecord, RefundRecord,
   Role, ShiftRecord, StockMovement
 } from "@cooffeup/shared";
 import { DELIVERY_PLATFORMS, DELIVERY_PLATFORM_IDS } from "@cooffeup/shared";
@@ -133,6 +133,34 @@ export interface IntegrationLogEntry {
   createdAt: string;
 }
 
+export interface LoyaltyAccount {
+  customerId: string;
+  points: number;
+  visits: number;
+  tier: LoyaltyTier;
+  updatedAt: string;
+}
+
+export interface LoyaltyLedgerEntry {
+  id: string;
+  customerId: string;
+  orderId: string;
+  type: "earn" | "redeem" | "refund_earn_reversal" | "refund_redeem_restore";
+  points: number;
+  createdAt: string;
+}
+
+/** Cash moved between the drawer and the safe or bank during a shift (float top-up, cash drop). */
+export interface CashMovement {
+  id: string;
+  shiftId: string;
+  type: "cash_in" | "cash_out";
+  amount: number;
+  reason: string;
+  staffId: string;
+  createdAt: string;
+}
+
 export interface AuditEntry {
   id: string;
   staffId?: string;
@@ -149,12 +177,20 @@ export interface Settings {
   sellerName: string;
   sellerVat: string;
   branchName: string;
+  /** Point-of-sale checkouts need an open shift so every sale is reconciled at drawer close. */
+  requireOpenShift: boolean;
 }
 
 export class Store {
   products = new Map<string, Product>();
   orders = new Map<string, OrderRecord>();
   idempotency = new Map<string, OrderRecord>();
+  /** Request body behind each idempotency key, so a reused key with a different order is rejected. */
+  idempotencyFingerprints = new Map<string, string>();
+  refundRequests = new Map<string, { fingerprint: string; refundId: string }>();
+  loyalty = new Map<string, LoyaltyAccount>();
+  loyaltyLedger: LoyaltyLedgerEntry[] = [];
+  cashMovements = new Map<string, CashMovement>();
   refunds = new Map<string, RefundRecord>();
   movements: StockMovement[] = [];
   customers = new Map<string, CustomerRecord>();
@@ -222,9 +258,9 @@ export function addStaff(store: Store, seed: SeedStaff) {
 export function seedDemoData(store: Store) {
   for (const seed of DEMO_STAFF) addStaff(store, seed);
   const products: Product[] = [
-    { id: "espresso", sku: "CF-001", barcode: "6281000000011", nameAr: "إسبريسو", nameEn: "Espresso", category: "القهوة", price: 1200, cost: 350, taxRateBps: 1500, stock: 100, reorderLevel: 20, active: true },
-    { id: "latte", sku: "CF-002", barcode: "6281000000028", nameAr: "لاتيه", nameEn: "Latte", category: "القهوة", price: 1800, cost: 550, taxRateBps: 1500, stock: 100, reorderLevel: 20, active: true },
-    { id: "cold-brew", sku: "CF-003", barcode: "6281000000035", nameAr: "كولد برو", nameEn: "Cold Brew", category: "المشروبات الباردة", price: 2000, cost: 600, taxRateBps: 1500, stock: 80, reorderLevel: 15, active: true },
+    { id: "espresso", rewardEligible: true, sku: "CF-001", barcode: "6281000000011", nameAr: "إسبريسو", nameEn: "Espresso", category: "القهوة", price: 1200, cost: 350, taxRateBps: 1500, stock: 100, reorderLevel: 20, active: true },
+    { id: "latte", rewardEligible: true, sku: "CF-002", barcode: "6281000000028", nameAr: "لاتيه", nameEn: "Latte", category: "القهوة", price: 1800, cost: 550, taxRateBps: 1500, stock: 100, reorderLevel: 20, active: true },
+    { id: "cold-brew", rewardEligible: true, sku: "CF-003", barcode: "6281000000035", nameAr: "كولد برو", nameEn: "Cold Brew", category: "المشروبات الباردة", price: 2000, cost: 600, taxRateBps: 1500, stock: 80, reorderLevel: 15, active: true },
     { id: "croissant", sku: "FD-001", barcode: "6281000000042", nameAr: "كرواسون", nameEn: "Croissant", category: "المخبوزات", price: 1400, cost: 500, taxRateBps: 1500, stock: 40, reorderLevel: 10, active: true },
     { id: "coffee-beans", sku: "RT-001", barcode: "6281000000059", nameAr: "حبوب قهوة 250 جم", nameEn: "Coffee beans 250g", category: "منتجات للبيع", price: 6500, cost: 3500, taxRateBps: 1500, stock: 25, reorderLevel: 5, active: true }
   ];

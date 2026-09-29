@@ -29,6 +29,8 @@ beforeAll(async () => {
   tokens.manager = await login("manager", "2222");
   tokens.cashier = await login("cashier", "3333");
   tokens.accountant = await login("accountant", "5555");
+  // Checkout needs an open shift (REQUIRE_OPEN_SHIFT defaults to true).
+  expect((await api("cashier", "POST", "/api/v1/shifts/open", { openingFloat: 100_000 })).statusCode).toBe(201);
 });
 
 let keySeq = 0;
@@ -247,14 +249,93 @@ describe("purchases, expenses & accounting", () => {
 });
 
 describe("shifts", () => {
-  it("computes expected cash and posts the variance on close", async () => {
-    const opened = await api("cashier", "POST", "/api/v1/shifts/open", { openingFloat: 50000 });
-    expect(opened.statusCode).toBe(201);
-    await sell("cashier", { type: "takeaway", lines: [{ productId: "espresso", quantity: 1 }], payments: [{ method: "cash", amount: 2000 }] });
-    const closed = (await api("cashier", "POST", `/api/v1/shifts/${opened.json().data.id}/close`, { countedCash: 51300 })).json().data;
-    expect(closed.expectedCash).toBe(51380);
+  const closeCurrent = async () => {
+    const current = store.openShift();
+    if (current) await api("manager", "POST", `/api/v1/shifts/${current.id}/close`, { countedCash: 0 });
+  };
+
+  it("requires an open shift to ring up a sale", async () => {
+    await closeCurrent();
+    const response = await sell("cashier", { type: "takeaway", lines: [{ productId: "espresso", quantity: 1 }], payments: [{ method: "mada", amount: 1380 }] });
+    expect(response.json().error).toBe("SHIFT_REQUIRED");
+  });
+
+  it("tracks cash movements, refunds and change, then reconciles the close", async () => {
+    const shiftId = (await api("cashier", "POST", "/api/v1/shifts/open", { openingFloat: 50_000 })).json().data.id;
+    await sell("cashier", { type: "takeaway", lines: [{ productId: "espresso", quantity: 1 }], payments: [{ method: "cash", amount: 2_000 }] });
+    const cardOrder = (await sell("cashier", { type: "takeaway", lines: [{ productId: "latte", quantity: 1 }], payments: [{ method: "mada", amount: 2_070 }] })).json().data;
+    expect((await api("cashier", "POST", `/api/v1/shifts/${shiftId}/movements`, { type: "cash_in", amount: 10_000, reason: "تعزيز الفكة" })).statusCode).toBe(201);
+    expect((await api("cashier", "POST", `/api/v1/shifts/${shiftId}/movements`, { type: "cash_out", amount: 1_000_000, reason: "إيداع بنكي" })).json().error).toBe("INSUFFICIENT_CASH_IN_DRAWER");
+    expect((await api("cashier", "POST", `/api/v1/shifts/${shiftId}/movements`, { type: "cash_out", amount: 20_000, reason: "إيداع بنكي" })).statusCode).toBe(201);
+
+    // A card sale cannot be refunded from the drawer, only back to the card.
+    const refundBody = { lines: [{ productId: "latte", quantity: 1 }], reason: "طلب خاطئ" };
+    expect((await api("manager", "POST", `/api/v1/orders/${cardOrder.id}/refund`, { ...refundBody, method: "cash" })).json().error).toBe("REFUND_METHOD_MISMATCH");
+    expect((await api("manager", "POST", `/api/v1/orders/${cardOrder.id}/refund`, refundBody)).json().data.method).toBe("mada");
+
+    const report = (await api("manager", "GET", `/api/v1/shifts/${shiftId}/report`)).json().data;
+    expect(report).toMatchObject({ cashSales: 1_380, cashIn: 10_000, cashOut: 20_000, expectedCash: 41_380, refunded: 2_070 });
+    expect(report.tenders).toMatchObject({ cash: 1_380, mada: 2_070 });
+    expect(report.refundsByMethod.mada).toBe(2_070);
+
+    const closed = (await api("cashier", "POST", `/api/v1/shifts/${shiftId}/close`, { countedCash: 41_300 })).json().data;
     expect(closed.variance).toBe(-80);
     expect(store.journal.at(-1)!.source.type).toBe("shift");
+    expect(balanced()).toBe(true);
+    expect((await api("cashier", "POST", "/api/v1/shifts/open", { openingFloat: 100_000 })).statusCode).toBe(201);
+  });
+});
+
+describe("loyalty", () => {
+  let customerId = "";
+  beforeAll(async () => {
+    customerId = (await api("cashier", "POST", "/api/v1/customers", { name: "فهد", phone: "0598765432" })).json().data.id;
+  });
+
+  it("earns points once per order even when the request is retried", async () => {
+    const payload = { type: "takeaway", customerId, lines: [{ productId: "cold-brew", quantity: 2 }], payments: [{ method: "mada", amount: 4_600 }] };
+    const headers = { "idempotency-key": "loyalty-order-0001" };
+    const first = (await api("cashier", "POST", "/api/v1/orders", payload, headers)).json().data;
+    await api("cashier", "POST", "/api/v1/orders", payload, headers);
+    expect(first.loyalty.earned).toBe(40);
+    expect(store.loyalty.get(customerId)).toMatchObject({ points: 40, visits: 1, tier: "member" });
+    expect((await api("cashier", "POST", "/api/v1/orders", { ...payload, lines: [{ productId: "latte", quantity: 1 }] }, headers)).json().error).toBe("IDEMPOTENCY_KEY_REUSED");
+  });
+
+  it("redeems one eligible drink with points and needs no payment for a free order", async () => {
+    expect((await sell("cashier", { type: "takeaway", customerId, redeemReward: "free_drink", lines: [{ productId: "latte", quantity: 1 }], payments: [] })).json().error).toBe("INSUFFICIENT_LOYALTY_POINTS");
+    store.loyalty.get(customerId)!.points = 150;
+    expect((await sell("cashier", { type: "takeaway", customerId, redeemReward: "free_drink", lines: [{ productId: "croissant", quantity: 1 }], payments: [{ method: "cash", amount: 1_610 }] })).json().error).toBe("NO_REWARD_ELIGIBLE_DRINK");
+    const free = await sell("cashier", { type: "takeaway", customerId, redeemReward: "free_drink", lines: [{ productId: "latte", quantity: 1 }], payments: [] });
+    expect(free.statusCode).toBe(201);
+    expect(free.json().data.totals.total).toBe(0);
+    expect(store.loyalty.get(customerId)!.points).toBe(50);
+
+    // The reward is paid with points, so a cashier can redeem it beyond their own discount limit.
+    const mixed = (await sell("cashier", { type: "takeaway", customerId, redeemReward: "free_drink", lines: [{ productId: "espresso", quantity: 1 }, { productId: "croissant", quantity: 1 }], payments: [{ method: "cash", amount: 1_610 }] }));
+    expect(mixed.json().error).toBe("INSUFFICIENT_LOYALTY_POINTS");
+    store.loyalty.get(customerId)!.points = 100;
+    const order = (await sell("cashier", { type: "takeaway", customerId, redeemReward: "free_drink", lines: [{ productId: "espresso", quantity: 1 }, { productId: "croissant", quantity: 1 }], payments: [{ method: "cash", amount: 1_610 }] })).json().data;
+    expect(order.totals.discount).toBe(1_200);
+    expect(order.loyalty).toMatchObject({ earned: 14, redeemed: "free_drink", redeemedPoints: 100 });
+
+    // A full refund reverses earned points, restores the redeemed ones and removes the visit.
+    const visits = store.loyalty.get(customerId)!.visits;
+    await api("manager", "POST", `/api/v1/orders/${order.id}/refund`, { lines: [{ productId: "espresso", quantity: 1 }, { productId: "croissant", quantity: 1 }], reason: "إلغاء الطلب" });
+    expect(store.loyalty.get(customerId)).toMatchObject({ points: 100, visits: visits - 1 });
+    const detail = (await api("cashier", "GET", `/api/v1/customers/${customerId}`)).json().data;
+    expect(detail.loyalty).toMatchObject({ points: 100, freeDrinksAvailable: 1 });
+    expect(balanced()).toBe(true);
+  });
+
+  it("replays a refund by key without restocking twice", async () => {
+    const order = (await sell("cashier", { type: "takeaway", lines: [{ productId: "croissant", quantity: 2 }], payments: [{ method: "mada", amount: 3_220 }] })).json().data;
+    const stock = store.products.get("croissant")!.stock;
+    const body = { lines: [{ productId: "croissant", quantity: 1 }], reason: "منتج تالف" };
+    const headers = { "idempotency-key": "refund-key-0001" };
+    expect((await api("manager", "POST", `/api/v1/orders/${order.id}/refund`, body, headers)).statusCode).toBe(201);
+    expect((await api("manager", "POST", `/api/v1/orders/${order.id}/refund`, body, headers)).json().replayed).toBe(true);
+    expect(store.products.get("croissant")!.stock).toBe(stock + 1);
   });
 });
 

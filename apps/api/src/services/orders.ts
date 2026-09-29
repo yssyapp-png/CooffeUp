@@ -1,5 +1,5 @@
 import {
-  calculateLine, calculateTotals, discountAllowed, distributeDiscount, hasFeature, maxDiscountBps, refundEntryLines, saleEntryLines,
+  calculateLine, calculateTotals, discountAllowed, distributeDiscount, FREE_DRINK_POINTS, hasFeature, maxDiscountBps, refundEntryLines, refundSlice, saleEntryLines,
   type CartLine, type Totals, type OrderLineRecord, type OrderRecord, type OrderType, type PaymentMethod, type RefundRecord, type SalesChannel
 } from "@cooffeup/shared";
 import { accessOf, fail, newId, now, staffCan, type AppContext } from "../context.js";
@@ -7,6 +7,8 @@ import { randomToken } from "../security.js";
 import type { StaffMember } from "../store.js";
 import { emit } from "./events.js";
 import { postJournal } from "./ledger.js";
+import { applyOrderLoyalty, reverseOrderLoyalty } from "./loyalty.js";
+import { shiftCashSummary } from "./shifts.js";
 import { enqueueStoreSync } from "./store-sync.js";
 
 export interface OrderInput {
@@ -16,6 +18,8 @@ export interface OrderInput {
   payments: Array<{ method: PaymentMethod; amount: number; reference?: string }>;
   customerId?: string;
   tableId?: string;
+  /** Spend loyalty points on one reward-eligible drink in this order. */
+  redeemReward?: "free_drink";
 }
 
 export interface OrderOptions {
@@ -31,7 +35,7 @@ export interface OrderOptions {
 const STOCK_REASON: Record<string, "sale" | "online_sale" | "delivery_sale"> = { pos: "sale", zid: "online_sale", salla: "online_sale" };
 
 /** Validates the lines and prices the order without changing any state. */
-export function priceOrder(ctx: AppContext, input: Pick<OrderInput, "lines" | "orderDiscount">, options: OrderOptions) {
+export function priceOrder(ctx: AppContext, input: Pick<OrderInput, "lines" | "orderDiscount" | "customerId" | "redeemReward">, options: OrderOptions) {
   const { store } = ctx;
   const fromPos = options.channel === "pos";
   let stockConflict = false;
@@ -53,6 +57,19 @@ export function priceOrder(ctx: AppContext, input: Pick<OrderInput, "lines" | "o
     return { productId: product.id, name: product.nameAr, unitPrice, quantity: line.quantity, taxRateBps: product.taxRateBps, discount: line.discount, notes: line.notes };
   });
 
+  // The reward is applied before the order discount so the discount spreads over what is left to pay.
+  let rewardDiscount = 0;
+  if (input.redeemReward === "free_drink") {
+    if (!input.customerId) fail(422, "CUSTOMER_REQUIRED_FOR_REWARD");
+    const points = store.loyalty.get(input.customerId!)?.points ?? 0;
+    if (points < FREE_DRINK_POINTS) fail(409, "INSUFFICIENT_LOYALTY_POINTS", { required: FREE_DRINK_POINTS, available: points });
+    const eligible = cart.filter((line) => store.products.get(line.productId)?.rewardEligible && line.unitPrice * line.quantity - (line.discount ?? 0) >= line.unitPrice)
+      .sort((a, b) => b.unitPrice - a.unitPrice)[0];
+    if (!eligible) fail(422, "NO_REWARD_ELIGIBLE_DRINK");
+    eligible!.discount = (eligible!.discount ?? 0) + eligible!.unitPrice;
+    rewardDiscount = eligible!.unitPrice;
+  }
+
   let lines: CartLine[];
   let totals: Totals;
   try {
@@ -61,8 +78,9 @@ export function priceOrder(ctx: AppContext, input: Pick<OrderInput, "lines" | "o
   } catch {
     return fail(422, "INVALID_DISCOUNT");
   }
+  // A redeemed reward is paid for with points, so it does not count against the cashier's discount limit.
   const access = accessOf(options.staff);
-  if (fromPos && !discountAllowed(access, totals.subtotal, totals.discount)) {
+  if (fromPos && !discountAllowed(access, totals.subtotal, totals.discount - rewardDiscount)) {
     fail(403, "DISCOUNT_NOT_ALLOWED", { maxDiscount: Math.floor((totals.subtotal * maxDiscountBps(access)) / 10_000) });
   }
   return { lines, totals, stockConflict };
@@ -71,6 +89,10 @@ export function priceOrder(ctx: AppContext, input: Pick<OrderInput, "lines" | "o
 export function createOrder(ctx: AppContext, input: OrderInput, options: OrderOptions): { order: OrderRecord; change: number } {
   const { store } = ctx;
   const fromPos = options.channel === "pos";
+  const shift = store.openShift();
+  // Offline sales are replayed after the fact and platform orders are not rung up at the till.
+  if (fromPos && !options.offline && store.settings.requireOpenShift && !shift) fail(409, "SHIFT_REQUIRED");
+  if (input.customerId && !store.customers.has(input.customerId)) fail(404, "CUSTOMER_NOT_FOUND");
   const { lines, totals, stockConflict } = priceOrder(ctx, input, options);
 
   const paid = input.payments.reduce((sum, payment) => sum + payment.amount, 0);
@@ -79,7 +101,6 @@ export function createOrder(ctx: AppContext, input: OrderInput, options: OrderOp
   const cashPaid = input.payments.filter((payment) => payment.method === "cash").reduce((sum, payment) => sum + payment.amount, 0);
   if (change > cashPaid) fail(422, "OVERPAYMENT_WITHOUT_CASH", { change });
 
-  if (input.customerId && !store.customers.has(input.customerId)) fail(404, "CUSTOMER_NOT_FOUND");
   const table = input.tableId ? store.tables.get(input.tableId) : undefined;
   if (input.tableId && !table) fail(404, "TABLE_NOT_FOUND");
   if (table && input.type !== "dine_in") fail(422, "TABLE_REQUIRES_DINE_IN");
@@ -108,11 +129,12 @@ export function createOrder(ctx: AppContext, input: OrderInput, options: OrderOp
   const order: OrderRecord = {
     id: orderId, receiptNumber: store.nextReceipt(), type: input.type, channel: options.channel, status: "paid",
     lines: recordLines, payments: input.payments, change, totals, cashierId: options.staff.id,
-    customerId: input.customerId, tableId: input.tableId, shiftId: store.openShift()?.id, externalOrderId: options.externalOrderId,
+    customerId: input.customerId, tableId: input.tableId, shiftId: shift?.id, externalOrderId: options.externalOrderId,
     offline: options.offline ? { ...options.offline, stockConflict } : undefined,
     invoiceToken: randomToken(), createdAt
   };
   store.orders.set(order.id, order);
+  applyOrderLoyalty(ctx, order, input.redeemReward === "free_drink");
   postJournal(ctx, { description: `فاتورة مبيعات ${order.receiptNumber}`, source: { type: "order", id: order.id }, lines: lineEntries, createdBy: options.staff.id });
 
   if (table) {
@@ -138,40 +160,66 @@ export interface RefundInput {
   reason: string;
 }
 
+/** What is still refundable through each payment method of an order. */
+function refundableByMethod(ctx: AppContext, order: OrderRecord) {
+  const available = new Map<PaymentMethod, number>();
+  for (const payment of order.payments) available.set(payment.method, (available.get(payment.method) ?? 0) + payment.amount);
+  if (order.change) available.set("cash", (available.get("cash") ?? 0) - order.change);
+  for (const refund of ctx.store.refunds.values()) {
+    if (refund.orderId === order.id) available.set(refund.method, (available.get(refund.method) ?? 0) - refund.total);
+  }
+  return available;
+}
+
 export function refundOrder(ctx: AppContext, orderId: string, input: RefundInput, staff: StaffMember): RefundRecord {
-  const order = ctx.store.orders.get(orderId);
+  const { store } = ctx;
+  const order = store.orders.get(orderId);
   if (!order) return fail(404, "ORDER_NOT_FOUND");
   const createdAt = now();
-  const refundLines = input.lines.map((requested) => {
-    const line = order.lines.find((candidate) => candidate.productId === requested.productId);
-    if (!line) return fail(422, "LINE_NOT_IN_ORDER", { productId: requested.productId });
-    if (requested.quantity > line.quantity - line.refundedQuantity) fail(422, "REFUND_EXCEEDS_SOLD", { productId: line.productId, refundable: line.quantity - line.refundedQuantity });
-    const lineTaxable = line.unitPrice * line.quantity - line.discount;
-    return {
-      line, quantity: requested.quantity,
-      taxable: Math.round((lineTaxable * requested.quantity) / line.quantity),
-      tax: Math.round((line.tax * requested.quantity) / line.quantity),
-      cost: line.unitCost * requested.quantity
-    };
+  const requested = new Map<string, number>();
+  const refundLines = input.lines.map((request) => {
+    const line = order.lines.find((candidate) => candidate.productId === request.productId);
+    if (!line) return fail(422, "LINE_NOT_IN_ORDER", { productId: request.productId });
+    const already = line.refundedQuantity + (requested.get(line.productId) ?? 0);
+    if (request.quantity > line.quantity - already) fail(422, "REFUND_EXCEEDS_SOLD", { productId: line.productId, refundable: line.quantity - already });
+    requested.set(line.productId, (requested.get(line.productId) ?? 0) + request.quantity);
+    return { line, quantity: request.quantity, ...refundSlice(line, already, request.quantity), cost: line.unitCost * request.quantity };
   });
   const taxable = refundLines.reduce((sum, line) => sum + line.taxable, 0);
   const tax = refundLines.reduce((sum, line) => sum + line.tax, 0);
   const cost = refundLines.reduce((sum, line) => sum + line.cost, 0);
-  const method = input.method ?? order.payments[0].method;
+  const total = taxable + tax;
+
+  // Money goes back the way it came in: never more than was collected through that method.
+  const available = refundableByMethod(ctx, order);
+  const method = input.method ?? [...available.entries()].find(([, amount]) => amount >= total)?.[0];
+  if (!method || (available.get(method) ?? 0) < total) {
+    fail(409, "REFUND_METHOD_MISMATCH", { available: Object.fromEntries(available) });
+  }
+  const shift = store.openShift();
+  if (method === "cash" && order.channel === "pos") {
+    if (store.settings.requireOpenShift && !shift) fail(409, "SHIFT_REQUIRED");
+    if (shift) {
+      const inDrawer = shiftCashSummary(ctx, shift).expectedCash;
+      if (total > inDrawer) fail(409, "INSUFFICIENT_CASH_IN_DRAWER", { available: inDrawer });
+    }
+  }
 
   for (const { line, quantity } of refundLines) {
     line.refundedQuantity += quantity;
-    ctx.store.products.get(line.productId)!.stock += quantity;
-    ctx.store.movements.push({ id: newId(), productId: line.productId, quantity, reason: "refund", refId: order.id, createdAt });
+    store.products.get(line.productId)!.stock += quantity;
+    store.movements.push({ id: newId(), productId: line.productId, quantity, reason: "refund", refId: order.id, createdAt });
   }
   order.status = order.lines.every((line) => line.refundedQuantity === line.quantity) ? "refunded" : "partially_refunded";
   const refund: RefundRecord = {
-    id: newId(), orderId: order.id, receiptNumber: order.receiptNumber, total: taxable + tax, method, reason: input.reason, staffId: staff.id,
-    shiftId: ctx.store.openShift()?.id, createdAt,
+    id: newId(), orderId: order.id, receiptNumber: order.receiptNumber, total, method: method!, reason: input.reason, staffId: staff.id,
+    shiftId: shift?.id, createdAt,
     lines: refundLines.map(({ line, quantity, taxable, tax, cost }) => ({ productId: line.productId, quantity, taxable, tax, cost }))
   };
-  ctx.store.refunds.set(refund.id, refund);
-  postJournal(ctx, { description: `مرتجع مبيعات للفاتورة ${order.receiptNumber}`, source: { type: "refund", id: refund.id }, lines: refundEntryLines({ method, taxable, tax, cost }), createdBy: staff.id });
+  store.refunds.set(refund.id, refund);
+  const refundedTotal = [...store.refunds.values()].filter((entry) => entry.orderId === order.id).reduce((sum, entry) => sum + entry.total, 0);
+  reverseOrderLoyalty(ctx, order, refundedTotal);
+  postJournal(ctx, { description: `مرتجع مبيعات للفاتورة ${order.receiptNumber}`, source: { type: "refund", id: refund.id }, lines: refundEntryLines({ method: method!, taxable, tax, cost }), createdBy: staff.id });
   enqueueStoreSync(ctx, refundLines.map(({ line }) => line.productId));
   emit(ctx, "order.refunded", refund);
   return refund;

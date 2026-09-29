@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import {
-  cashVarianceLines, formatSar, maskPhone, normalizeSaudiMobile,
+  cashTransferLines, cashVarianceLines, formatSar, maskPhone, normalizeSaudiMobile,
   type HeldCart, type Permission, type OrderRecord, type Product, type ShiftRecord, type SyncResult
 } from "@cooffeup/shared";
 import { z } from "zod";
@@ -9,7 +9,9 @@ import { emit } from "../services/events.js";
 import { renderInvoicePage } from "../services/invoice-page.js";
 import { postJournal } from "../services/ledger.js";
 import { createOrder, refundOrder, type OrderInput } from "../services/orders.js";
+import { shiftCashSummary, shiftReport } from "../services/shifts.js";
 import { sendSms } from "../services/sms.js";
+import type { CashMovement } from "../store.js";
 import { enqueueStoreSync } from "../services/store-sync.js";
 
 const money = z.number().int().nonnegative();
@@ -22,9 +24,11 @@ export const orderSchema = z.object({
     unitPrice: money.optional(), notes: z.string().max(250).optional()
   })).min(1).max(100),
   orderDiscount: money.optional(),
-  payments: z.array(z.object({ method: paymentMethod, amount: z.number().int().positive(), reference: z.string().max(64).optional() })).min(1).max(5),
+  // Empty only when a reward makes the order free; createOrder rejects any shortfall.
+  payments: z.array(z.object({ method: paymentMethod, amount: z.number().int().positive().max(100_000_000), reference: z.string().max(64).optional() })).max(5),
   customerId: z.string().optional(),
-  tableId: z.string().optional()
+  tableId: z.string().optional(),
+  redeemReward: z.enum(["free_drink"]).optional()
 });
 
 const productSchema = z.object({
@@ -35,13 +39,8 @@ const productSchema = z.object({
 
 const idempotencyKey = (value: unknown) => typeof value === "string" && value.length >= 8 && value.length <= 100 ? value : undefined;
 
-export function shiftCashSummary(ctx: AppContext, shift: ShiftRecord) {
-  const orders = [...ctx.store.orders.values()].filter((order) => order.shiftId === shift.id);
-  const cashSales = orders.reduce((sum, order) => sum + order.payments.filter((payment) => payment.method === "cash").reduce((s, p) => s + p.amount, 0) - order.change, 0);
-  const cashRefunds = [...ctx.store.refunds.values()].filter((refund) => refund.shiftId === shift.id && refund.method === "cash").reduce((sum, refund) => sum + refund.total, 0);
-  const cashExpenses = [...ctx.store.expenses.values()].filter((expense) => expense.shiftId === shift.id && expense.paidFrom === "cash").reduce((sum, expense) => sum + expense.total, 0);
-  return { orders: orders.length, cashSales, cashRefunds, cashExpenses, expectedCash: shift.openingFloat + cashSales - cashRefunds - cashExpenses };
-}
+/** Stable fingerprint of a request body: the same key must always carry the same order. */
+const fingerprint = (value: unknown) => JSON.stringify(value);
 
 export function registerPosRoutes(app: FastifyInstance, ctx: AppContext) {
   const { store } = ctx;
@@ -99,11 +98,15 @@ export function registerPosRoutes(app: FastifyInstance, ctx: AppContext) {
   app.post("/api/v1/orders", guard("pos.sell"), async (request, reply) => {
     const key = idempotencyKey(request.headers["idempotency-key"]);
     if (!key) return reply.code(400).send({ error: "VALID_IDEMPOTENCY_KEY_REQUIRED" });
-    const existing = store.idempotency.get(key);
-    if (existing) return reply.code(200).send({ data: existing, replayed: true });
     const body = parse(orderSchema, request.body);
+    const existing = store.idempotency.get(key);
+    if (existing) {
+      if (store.idempotencyFingerprints.get(key) !== fingerprint(body)) return reply.code(409).send({ error: "IDEMPOTENCY_KEY_REUSED" });
+      return reply.code(200).send({ data: existing, change: existing.change, replayed: true });
+    }
     const { order, change } = createOrder(ctx, body, { staff: actor(request), channel: "pos" });
     store.idempotency.set(key, order);
+    store.idempotencyFingerprints.set(key, fingerprint(body));
     if (order.lines.some((line) => line.priceOverride)) audit(ctx, request, "order.price_override", { type: "order", id: order.id });
     return reply.code(201).send({ data: order, change });
   });
@@ -114,7 +117,16 @@ export function registerPosRoutes(app: FastifyInstance, ctx: AppContext) {
       method: z.enum(["cash", "card", "mada", "apple_pay", "stc_pay", "online", "delivery_platform"]).optional(),
       reason: z.string().min(3).max(250)
     }), request.body);
+    // An optional idempotency key lets a till retry a refund after a timeout without paying twice.
+    const key = idempotencyKey(request.headers["idempotency-key"]);
+    const print = fingerprint({ orderId: request.params.id, ...body });
+    const previous = key ? store.refundRequests.get(key) : undefined;
+    if (previous) {
+      if (previous.fingerprint !== print) return reply.code(409).send({ error: "IDEMPOTENCY_KEY_REUSED" });
+      return reply.code(200).send({ data: store.refunds.get(previous.refundId), replayed: true });
+    }
     const refund = refundOrder(ctx, request.params.id, body, actor(request));
+    if (key) store.refundRequests.set(key, { fingerprint: print, refundId: refund.id });
     audit(ctx, request, "order.refunded", { type: "order", id: request.params.id }, { total: refund.total, reason: body.reason });
     return reply.code(201).send({ data: refund });
   });
@@ -129,12 +141,17 @@ export function registerPosRoutes(app: FastifyInstance, ctx: AppContext) {
     }), request.body);
     const results: SyncResult[] = body.entries.map((entry) => {
       const existing = store.idempotency.get(entry.id);
-      if (existing) return { id: entry.id, status: "duplicate", receiptNumber: existing.receiptNumber };
+      if (existing) {
+        return store.idempotencyFingerprints.get(entry.id) === fingerprint(entry.payload)
+          ? { id: entry.id, status: "duplicate", receiptNumber: existing.receiptNumber }
+          : { id: entry.id, status: "rejected", error: "IDEMPOTENCY_KEY_REUSED" };
+      }
       try {
         const { order } = createOrder(ctx, entry.payload as OrderInput, {
           staff: actor(request), channel: "pos", offline: { deviceId: body.deviceId, localReceipt: entry.localReceipt, capturedAt: entry.capturedAt }
         });
         store.idempotency.set(entry.id, order);
+        store.idempotencyFingerprints.set(entry.id, fingerprint(entry.payload));
         return { id: entry.id, status: "created", receiptNumber: order.receiptNumber };
       } catch (error) {
         if (error instanceof HttpError) return { id: entry.id, status: "rejected", error: error.code };
@@ -163,7 +180,34 @@ export function registerPosRoutes(app: FastifyInstance, ctx: AppContext) {
   // ---------- Shifts & cash drawer ----------
   app.get("/api/v1/shifts/current", guard("shifts.manage"), async () => {
     const shift = store.openShift();
-    return { data: shift ? { ...shift, summary: shiftCashSummary(ctx, shift) } : null };
+    return { data: shift ? { ...shift, summary: shiftCashSummary(ctx, shift) } : null, requireOpenShift: store.settings.requireOpenShift };
+  });
+
+  app.get("/api/v1/shifts", guard("shifts.manage"), async () => ({ data: [...store.shifts.values()].slice(-50).reverse() }));
+
+  app.get<{ Params: { id: string } }>("/api/v1/shifts/:id/report", guard("shifts.manage"), async (request) => {
+    const shift = store.shifts.get(request.params.id) ?? fail(404, "SHIFT_NOT_FOUND");
+    return { data: shiftReport(ctx, shift) };
+  });
+
+  app.post<{ Params: { id: string } }>("/api/v1/shifts/:id/movements", guard("shifts.manage"), async (request, reply) => {
+    const shift = store.shifts.get(request.params.id) ?? fail(404, "SHIFT_NOT_FOUND");
+    if (shift.status !== "open") fail(409, "SHIFT_NOT_OPEN");
+    const body = parse(z.object({ type: z.enum(["cash_in", "cash_out"]), amount: money.refine((value) => value > 0), reason: z.string().trim().min(3).max(250) }), request.body);
+    if (body.type === "cash_out") {
+      const inDrawer = shiftCashSummary(ctx, shift).expectedCash;
+      if (body.amount > inDrawer) fail(409, "INSUFFICIENT_CASH_IN_DRAWER", { available: inDrawer });
+    }
+    const movement: CashMovement = { id: newId(), shiftId: shift.id, ...body, staffId: actor(request).id, createdAt: now() };
+    store.cashMovements.set(movement.id, movement);
+    // Cash moves between the drawer and the safe/bank, so it is a transfer between asset accounts.
+    postJournal(ctx, {
+      description: body.type === "cash_in" ? `إيداع نقد في الصندوق: ${body.reason}` : `سحب نقد من الصندوق: ${body.reason}`,
+      source: { type: "shift", id: shift.id }, createdBy: actor(request).id,
+      lines: body.type === "cash_in" ? cashTransferLines("1101", "1102", body.amount) : cashTransferLines("1102", "1101", body.amount)
+    });
+    audit(ctx, request, `shift.${body.type}`, { type: "shift", id: shift.id }, { amount: body.amount, reason: body.reason });
+    return reply.code(201).send({ data: movement, summary: shiftCashSummary(ctx, shift) });
   });
 
   app.post("/api/v1/shifts/open", guard("shifts.manage"), async (request, reply) => {

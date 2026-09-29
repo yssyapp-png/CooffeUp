@@ -10,3 +10,4 @@ export * from "./sectors.js";
 export * from "./zatca.js";
 export * from "./phone.js";
 export * from "./reports.js";
+export * from "./loyalty.js";

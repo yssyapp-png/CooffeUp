@@ -3,7 +3,7 @@ import {
   applySyncResults, can, customerInsights, discountAllowed, distributeDiscount, expenseEntryLines, findAppointmentConflict,
   calculateTotals, incomeStatement, isValidSaudiVat, journalToCsv, markBatchFailed, maskPhone, normalizeSaudiMobile,
   parseInvoiceText, permissionsFor, promotionSuggestions, purchaseEntryLines, refundEntryLines, saleEntryLines,
-  trialBalance, vatReturn, zatcaQrPayload, REPORTS, type JournalEntry, type OutboxEntry, type ReportDataset
+  trialBalance, vatReturn, zatcaQrPayload, REPORTS, refundSlice, parseSar, loyaltyTierForVisits, calculateLoyaltyPoints, loyaltySnapshot, type JournalEntry, type OutboxEntry, type ReportDataset
 } from "./index.js";
 
 const entry = (number: number, lines: JournalEntry["lines"], date = "2026-09-01"): JournalEntry => ({
@@ -26,6 +26,33 @@ describe("calculateTotals", () => {
     ], 100);
     expect(lines.map((line) => line.discount).reduce((a, b) => a! + b!, 0)).toBe(100);
     expect(calculateTotals(lines).discount).toBe(100);
+  });
+});
+
+describe("refunds and input parsing", () => {
+  it("allocates tax rounding across partial refunds without losing a halala", () => {
+    const line = { unitPrice: 1_000, quantity: 3, discount: 100, taxRateBps: 1_500 };
+    const full = calculateTotals([{ productId: "x", name: "x", ...line }]);
+    const slices = [refundSlice(line, 0, 1), refundSlice(line, 1, 1), refundSlice(line, 2, 1)];
+    expect(slices.reduce((sum, slice) => sum + slice.taxable, 0)).toBe(full.taxable);
+    expect(slices.reduce((sum, slice) => sum + slice.tax, 0)).toBe(full.tax);
+  });
+  it("parses SAR amounts strictly", () => {
+    expect(parseSar("12")).toBe(1_200);
+    expect(parseSar("12.5")).toBe(1_250);
+    expect(parseSar(" 0.05 ")).toBe(5);
+    for (const bad of ["", "1e3", "-5", "12.345", "abc", "1,000"]) expect(parseSar(bad)).toBeNull();
+  });
+});
+
+describe("loyalty", () => {
+  it("promotes customers by completed visit count", () => {
+    expect([0, 5, 15, 30].map(loyaltyTierForVisits)).toEqual(["member", "silver", "gold", "platinum"]);
+  });
+  it("earns whole points from taxable halalas with a tier multiplier", () => {
+    expect(calculateLoyaltyPoints(2_050, "member")).toBe(20);
+    expect(calculateLoyaltyPoints(2_050, "gold")).toBe(25);
+    expect(loyaltySnapshot({ points: 230, visits: 6, tier: "silver" }).freeDrinksAvailable).toBe(2);
   });
 });
 

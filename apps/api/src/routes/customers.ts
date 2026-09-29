@@ -1,5 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import { customerInsights, maskEmail, maskPhone, normalizeSaudiMobile, promotionSuggestions, SEGMENT_LABELS, type Permission } from "@cooffeup/shared";
+import {
+  customerInsights, loyaltySnapshot, LOYALTY_TIER_LABELS, maskEmail, maskPhone, normalizeSaudiMobile, promotionSuggestions, SEGMENT_LABELS, type Permission
+} from "@cooffeup/shared";
 import { z } from "zod";
 import { actor, audit, fail, guarded, newId, now, parse, staffCan, type AppContext } from "../context.js";
 import type { CustomerRecord } from "../store.js";
@@ -18,10 +20,12 @@ export function registerCustomerRoutes(app: FastifyInstance, ctx: AppContext) {
     const phone = customer.phoneEnc ? ctx.crypto.decrypt(customer.phoneEnc) : undefined;
     const email = customer.emailEnc ? ctx.crypto.decrypt(customer.emailEnc) : undefined;
     const insights = customerInsights(purchasesOf(customer.id));
+    const account = store.loyalty.get(customer.id) ?? { points: 0, visits: 0, tier: "member" as const };
     return {
       id: customer.id, name: customer.name, notes: customer.notes, marketingConsent: customer.marketingConsent, createdAt: customer.createdAt,
       phone: phone && (reveal ? phone : maskPhone(phone)), email: email && (reveal ? email : maskEmail(email)), piiRevealed: reveal,
-      insights: { ...insights, segmentLabel: SEGMENT_LABELS[insights.segment] }
+      insights: { ...insights, segmentLabel: SEGMENT_LABELS[insights.segment] },
+      loyalty: { ...loyaltySnapshot(account), tierLabel: LOYALTY_TIER_LABELS[account.tier] }
     };
   };
 
