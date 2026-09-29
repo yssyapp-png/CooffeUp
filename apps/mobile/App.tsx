@@ -1,19 +1,101 @@
-import { useMemo, useState } from "react";
-import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from "react-native";
-import { calculateTotals, formatSar, type Product } from "@cooffeup/shared";
+import { useCallback, useEffect, useState } from "react";
+import { ActivityIndicator, Pressable, Text, View } from "react-native";
+import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
+import { StatusBar } from "expo-status-bar";
+import { api, loadApiUrl, setSession } from "./src/api";
+import { LoginScreen, type SessionStaff } from "./src/LoginScreen";
+import { useOutbox } from "./src/outbox";
+import { PosScreen } from "./src/PosScreen";
+import { ShiftScreen } from "./src/ShiftScreen";
+import { readSession, writeSession } from "./src/storage";
+import { colors, ui } from "./src/theme";
 
-const products:Product[]=[
-  {id:"espresso",sku:"CF-001",nameAr:"إسبريسو",nameEn:"Espresso",category:"coffee",price:1200,taxRateBps:1500,stock:100,active:true},
-  {id:"latte",sku:"CF-002",nameAr:"لاتيه",nameEn:"Latte",category:"coffee",price:1800,taxRateBps:1500,stock:100,active:true},
-  {id:"cold-brew",sku:"CF-003",nameAr:"كولد برو",nameEn:"Cold Brew",category:"cold",price:2000,taxRateBps:1500,stock:80,active:true},
-  {id:"croissant",sku:"FD-001",nameAr:"كرواسون",nameEn:"Croissant",category:"bakery",price:1400,taxRateBps:1500,stock:40,active:true}
-];
-export default function Pos(){
-  const [cart,setCart]=useState<Record<string,number>>({});
-  const totals=useMemo(()=>calculateTotals(products.filter(p=>cart[p.id]).map(p=>({productId:p.id,name:p.nameAr,unitPrice:p.price,quantity:cart[p.id],taxRateBps:p.taxRateBps}))),[cart]);
-  return <SafeAreaView style={s.safe}><View style={s.header}><Text style={s.brand}>CooffeUp</Text><Text style={s.status}>متصل وآمن ●</Text></View><ScrollView contentContainerStyle={s.body}>
-    <Text style={s.eyebrow}>الوردية الصباحية</Text><Text style={s.title}>اختر المنتجات</Text><View style={s.grid}>{products.map(p=><Pressable key={p.id} style={s.card} onPress={()=>setCart(c=>({...c,[p.id]:(c[p.id]??0)+1}))}><Text style={s.icon}>☕</Text><Text style={s.product}>{p.nameAr}</Text><Text style={s.en}>{p.nameEn}</Text><Text style={s.price}>{formatSar(p.price)}</Text>{cart[p.id]?<Text style={s.badge}>{cart[p.id]}</Text>:null}</Pressable>)}</View>
-    <View style={s.order}><Text style={s.orderTitle}>الطلب الحالي</Text>{products.filter(p=>cart[p.id]).map(p=><View style={s.line} key={p.id}><Text>{p.nameAr} × {cart[p.id]}</Text><Text>{formatSar(p.price*cart[p.id])}</Text></View>)}<View style={s.total}><Text style={s.totalText}>الإجمالي</Text><Text style={s.totalText}>{formatSar(totals.total)}</Text></View><Pressable disabled={!totals.total} style={[s.pay,!totals.total&&s.disabled]}><Text style={s.payText}>الدفع</Text></Pressable></View>
-  </ScrollView></SafeAreaView>
+interface Session { token: string; staff: SessionStaff }
+interface BranchOption { id: string; name: string; active: boolean }
+
+export default function App() {
+  const [ready, setReady] = useState(false);
+  const [session, setSessionState] = useState<Session | null>(null);
+  const [tab, setTab] = useState<"pos" | "shift">("pos");
+  const [branches, setBranches] = useState<BranchOption[]>([]);
+  const [branchId, setBranchId] = useState("main");
+  const [shiftOpen, setShiftOpen] = useState<boolean | null>(null);
+  const outbox = useOutbox(Boolean(session));
+
+  const logout = useCallback(async () => {
+    await writeSession(null);
+    setSession(null, null);
+    setSessionState(null);
+  }, []);
+
+  useEffect(() => {
+    void (async () => {
+      await loadApiUrl();
+      const saved = await readSession<Session & { branchId?: string }>();
+      if (saved) {
+        const branch = saved.staff.branchId ?? saved.branchId ?? "main";
+        setSession(saved.token, branch, () => void logout());
+        setBranchId(branch);
+        setSessionState(saved);
+      }
+      setReady(true);
+    })();
+  }, [logout]);
+
+  // Staff tied to a branch always work there; others can switch between active branches.
+  const refreshContext = useCallback(async () => {
+    if (!session) return;
+    try {
+      setBranches((await api<{ data: BranchOption[] }>("/api/v1/branches")).data.filter((branch) => branch.active));
+      const current = await api<{ data: unknown; requireOpenShift: boolean }>("/api/v1/shifts/current");
+      setShiftOpen(current.requireOpenShift ? Boolean(current.data) : true);
+    } catch {
+      setShiftOpen(null);
+    }
+  }, [session]);
+  useEffect(() => { void refreshContext(); }, [refreshContext, branchId]);
+
+  async function switchBranch(id: string) {
+    if (!session || session.staff.branchId) return;
+    setSession(session.token, id, () => void logout());
+    setBranchId(id);
+    await writeSession({ ...session, branchId: id });
+  }
+
+  if (!ready) return <SafeAreaProvider><View style={[ui.safe, { justifyContent: "center" }]}><ActivityIndicator color={colors.brand} /></View></SafeAreaProvider>;
+
+  return <SafeAreaProvider><SafeAreaView style={ui.safe} edges={["top", "bottom"]}>
+    <StatusBar style="light" />
+    <View style={ui.header}>
+      <View>
+        <Text style={ui.brand}>CooffeUp</Text>
+        <Text style={ui.headerNote}>{session ? `${session.staff.name} · ${branches.find((branch) => branch.id === branchId)?.name ?? ""}` : "نقطة البيع"}</Text>
+      </View>
+      <Text style={ui.headerNote}>{outbox.online ? "● متصل" : "○ بلا اتصال"}{outbox.pending ? ` · ${outbox.pending} بانتظار المزامنة` : ""}</Text>
+    </View>
+
+    {!session ? <LoginScreen onLogin={async (token, staff) => {
+      const branch = staff.branchId ?? branchId;
+      setSession(token, branch, () => void logout());
+      setBranchId(branch);
+      await writeSession({ token, staff, branchId: branch });
+      setSessionState({ token, staff });
+    }} /> : <>
+      {!session.staff.branchId && branches.length > 1 && <View style={[ui.row, { paddingHorizontal: 16, paddingTop: 10, flexWrap: "wrap" }]}>
+        {branches.map((branch) => <Pressable key={branch.id} style={[ui.chip, branchId === branch.id && ui.chipActive]} onPress={() => switchBranch(branch.id)} accessibilityRole="button">
+          <Text style={branchId === branch.id ? ui.chipTextActive : ui.chipText}>{branch.name}</Text>
+        </Pressable>)}
+      </View>}
+      <View style={{ flex: 1 }}>
+        {tab === "pos" ? <PosScreen key={branchId} outbox={outbox} shiftOpen={shiftOpen} onSold={() => void refreshContext()} />
+          : <ShiftScreen key={branchId} onChange={(open) => setShiftOpen(open)} />}
+      </View>
+      <View style={{ flexDirection: "row-reverse", borderTopWidth: 1, borderTopColor: colors.line, backgroundColor: "#fff" }}>
+        {([["pos", "البيع"], ["shift", "الوردية"]] as const).map(([id, label]) => <Pressable key={id} style={{ flex: 1, paddingVertical: 14, alignItems: "center" }} onPress={() => setTab(id)} accessibilityRole="tab" accessibilityState={{ selected: tab === id }}>
+          <Text style={{ fontWeight: tab === id ? "800" : "500", color: tab === id ? colors.brand : colors.muted }}>{label}</Text>
+        </Pressable>)}
+        <Pressable style={{ flex: 1, paddingVertical: 14, alignItems: "center" }} onPress={logout} accessibilityRole="button"><Text style={{ color: colors.danger }}>خروج</Text></Pressable>
+      </View>
+    </>}
+  </SafeAreaView></SafeAreaProvider>;
 }
-const s=StyleSheet.create({safe:{flex:1,backgroundColor:"#f4f1e9"},header:{height:64,backgroundColor:"#18392d",paddingHorizontal:20,flexDirection:"row",alignItems:"center",justifyContent:"space-between"},brand:{color:"#fff",fontWeight:"800",fontSize:22},status:{color:"#b9ddc9",fontSize:12},body:{padding:18},eyebrow:{textAlign:"right",color:"#8a7250"},title:{textAlign:"right",fontWeight:"800",fontSize:27,marginBottom:18},grid:{flexDirection:"row",flexWrap:"wrap",gap:12},card:{backgroundColor:"white",borderRadius:17,padding:15,width:"48%",minHeight:170},icon:{fontSize:35},product:{textAlign:"right",fontWeight:"700",fontSize:17,marginTop:12},en:{textAlign:"right",color:"#888"},price:{textAlign:"right",color:"#7f5b28",fontWeight:"700",marginTop:8},badge:{position:"absolute",left:10,top:10,backgroundColor:"#18392d",color:"white",borderRadius:20,paddingHorizontal:9,paddingVertical:4},order:{marginTop:20,backgroundColor:"white",borderRadius:18,padding:18},orderTitle:{fontWeight:"800",fontSize:19,textAlign:"right",marginBottom:12},line:{flexDirection:"row-reverse",justifyContent:"space-between",paddingVertical:9,borderBottomWidth:1,borderBottomColor:"#eee"},total:{flexDirection:"row-reverse",justifyContent:"space-between",marginVertical:18},totalText:{fontWeight:"800",fontSize:19},pay:{backgroundColor:"#18392d",borderRadius:12,padding:14},disabled:{opacity:.4},payText:{color:"white",fontWeight:"700",textAlign:"center",fontSize:17}});
