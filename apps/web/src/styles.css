@@ -126,6 +126,10 @@ td { padding: 9px 8px; border-bottom: 1px solid #f0ece4; }
 tfoot td { font-weight: 700; border-top: 1px solid var(--line); }
 tr.clickable { cursor: pointer; }
 tr.clickable:hover { background: #faf8f3; }
+tr.selected-row { background: var(--brand-soft); }
+.refund-line { flex-direction: row !important; justify-content: space-between; align-items: center; }
+.refund-line input { width: 80px; }
+a.ghost { text-decoration: none; color: inherit; }
 table.edit input, table.edit select { width: 100%; padding: 7px; }
 table.statement tr.strong td { font-weight: 800; border-top: 1px solid var(--line); }
 .journal-entry { border-bottom: 1px solid var(--line); padding: 10px 0; }
@@ -251,6 +255,19 @@ button.inline { border: 0; background: none; padding: 2px; color: var(--brand-in
 .report-list h4 { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
 .report-list button { display: block; width: 100%; text-align: start; border: 0; background: none; padding: 7px 9px; border-radius: 8px; font-size: 14px; }
 .report-list button.active { background: var(--brand-soft); color: var(--brand-ink); font-weight: 700; }
+.stats.hero > div { background: var(--card); border: 1px solid var(--line); }
+.stats.hero b { font-size: 22px; }
+.alerts { display: flex; gap: 8px; align-items: flex-start; }
+.alerts ul { margin: 0; padding-inline-start: 16px; }
+.bars { display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px; height: 220px; align-items: end; padding-top: 28px; border-bottom: 1px solid var(--line); }
+.bar-col { position: relative; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 6px; outline: none; }
+.bar-col .bar { width: min(36px, 70%); background: var(--brand-ink); border-radius: 4px 4px 0 0; min-height: 0; }
+.bar-col:hover .bar, .bar-col:focus .bar { background: var(--brand); }
+.bar-col small { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.bar-col .tip { position: absolute; top: -26px; background: var(--ink); color: #fff; font-size: 11px; padding: 3px 8px; border-radius: 6px; white-space: nowrap; opacity: 0; pointer-events: none; transition: opacity .15s; }
+.bar-col:hover .tip, .bar-col:focus .tip { opacity: 1; }
+.board.two { grid-template-columns: repeat(2, minmax(260px, 1fr)); }
+.late-card { box-shadow: 0 0 0 2px var(--danger) inset; }
 .permissions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px; }
 
 @media (max-width: 1100px) {

@@ -43,6 +43,27 @@ const KITCHEN_FLOW: Record<KitchenStatus, KitchenStatus[]> = {
 };
 export const canTransitionKitchen = (from: KitchenStatus, to: KitchenStatus) => KITCHEN_FLOW[from].includes(to);
 
+/** Laundry-style orders: items are received now and collected later. */
+export type PickupStatus = "received" | "ready" | "collected";
+export const PICKUP_STATUS_LABELS: Record<PickupStatus, string> = { received: "تم الاستلام", ready: "جاهز للتسليم", collected: "تم التسليم" };
+const PICKUP_FLOW: Record<PickupStatus, PickupStatus[]> = { received: ["ready"], ready: ["collected", "received"], collected: [] };
+export const canTransitionPickup = (from: PickupStatus, to: PickupStatus) => PICKUP_FLOW[from].includes(to);
+
+export interface PickupTicket {
+  id: string;
+  branchId?: string;
+  orderId: string;
+  receiptNumber: string;
+  customerId?: string;
+  items: Array<{ name: string; quantity: number; notes?: string }>;
+  dueAt: string;
+  status: PickupStatus;
+  createdAt: string;
+  readyAt?: string;
+  collectedAt?: string;
+  notifiedAt?: string;
+}
+
 export type AppointmentStatus = "booked" | "checked_in" | "completed" | "cancelled" | "no_show";
 export const APPOINTMENT_STATUS_LABELS: Record<AppointmentStatus, string> = {
   booked: "محجوز", checked_in: "حضر", completed: "مكتمل", cancelled: "ملغى", no_show: "لم يحضر"

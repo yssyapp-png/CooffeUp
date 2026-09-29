@@ -1,9 +1,10 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import {
-  APPOINTMENT_STATUS_LABELS, KITCHEN_STATUS_LABELS, TABLE_STATUS_LABELS, canTransitionAppointment, canTransitionKitchen, findAppointmentConflict,
+  APPOINTMENT_STATUS_LABELS, KITCHEN_STATUS_LABELS, PICKUP_STATUS_LABELS, canTransitionPickup, type PickupStatus, TABLE_STATUS_LABELS, canTransitionAppointment, canTransitionKitchen, findAppointmentConflict,
   riyadhDate, type Appointment, type AppointmentStatus, type DiningTable, type KitchenStatus, type Permission, type TableStatus
 } from "@cooffeup/shared";
 import { z } from "zod";
+import { sendSms } from "../services/sms.js";
 import { MAIN_BRANCH_ID } from "../store.js";
 import { actor, audit, branchOf, fail, guarded, newId, now, parse, type AppContext } from "../context.js";
 
@@ -65,6 +66,38 @@ export function registerOperationsRoutes(app: FastifyInstance, ctx: AppContext) 
     if (status === "ready") ticket.readyAt = at;
     if (status === "served") ticket.servedAt = at;
     return { data: ticket };
+  });
+
+  // ---------- Pickup tickets (laundries) ----------
+  app.get("/api/v1/pickup-tickets", guard("pos.sell"), async (request) => {
+    const query = parse(z.object({ status: z.enum(keys(PICKUP_STATUS_LABELS)).optional(), q: z.string().trim().max(40).optional() }), request.query);
+    const data = [...store.pickupTickets.values()]
+      .filter((ticket) => inBranch(ticket.branchId, request) && (query.status ? ticket.status === query.status : ticket.status !== "collected") &&
+        (!query.q || ticket.receiptNumber.toLowerCase().includes(query.q.toLowerCase())))
+      .sort((a, b) => a.dueAt.localeCompare(b.dueAt))
+      .map((ticket) => ({ ...ticket, statusLabel: PICKUP_STATUS_LABELS[ticket.status], customerName: ticket.customerId ? store.customers.get(ticket.customerId)?.name : undefined }));
+    return { data };
+  });
+
+  app.patch<{ Params: { id: string } }>("/api/v1/pickup-tickets/:id", guard("pos.sell"), async (request) => {
+    const ticket = store.pickupTickets.get(request.params.id) ?? fail(404, "TICKET_NOT_FOUND");
+    const body = parse(z.object({ status: z.enum(keys(PICKUP_STATUS_LABELS)), notify: z.boolean().default(false) }), request.body);
+    const status = body.status as PickupStatus;
+    if (!canTransitionPickup(ticket.status, status)) fail(409, "INVALID_STATUS_TRANSITION", { from: ticket.status, to: status });
+    ticket.status = status;
+    if (status === "ready") ticket.readyAt = now();
+    if (status === "collected") ticket.collectedAt = now();
+    // Tell the customer their items are ready, when they have a phone on file and staff chose to.
+    let notified: { status: "sent" | "failed" | "skipped"; error?: string } = { status: "skipped" };
+    const customer = ticket.customerId ? store.customers.get(ticket.customerId) : undefined;
+    if (status === "ready" && body.notify && customer?.phoneEnc) {
+      const phone = ctx.crypto.decrypt(customer.phoneEnc);
+      const result = await sendSms(ctx, phone, `${store.settings.sellerName}: طلبك ${ticket.receiptNumber} جاهز للاستلام. شكرًا لك.`);
+      notified = result.ok ? { status: "sent" } : { status: "failed", error: result.error };
+      if (result.ok) ticket.notifiedAt = now();
+    }
+    audit(ctx, request, "pickup.status", { type: "pickup", id: ticket.id }, { status, notified: notified.status });
+    return { data: ticket, notified };
   });
 
   // ---------- Appointments (salons, clinics, laundries) ----------

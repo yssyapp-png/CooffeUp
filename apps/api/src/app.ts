@@ -6,6 +6,7 @@ import { loadConfig } from "./config.js";
 import { HttpError, type AppContext, type FetchLike } from "./context.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerBranchRoutes } from "./routes/branches.js";
+import { registerDashboardRoutes } from "./routes/dashboard.js";
 import { registerChannelRoutes } from "./routes/channels.js";
 import { registerCustomerRoutes } from "./routes/customers.js";
 import { registerFinanceRoutes } from "./routes/finance.js";
@@ -109,5 +110,6 @@ export async function buildApp(options: BuildOptions = {}) {
   registerChannelRoutes(app, ctx);
   registerOperationsRoutes(app, ctx);
   registerBranchRoutes(app, ctx);
+  registerDashboardRoutes(app, ctx);
   return app;
 }

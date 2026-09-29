@@ -20,6 +20,8 @@ export interface OrderInput {
   tableId?: string;
   /** Spend loyalty points on one reward-eligible drink in this order. */
   redeemReward?: "free_drink";
+  /** For businesses with pickup tickets (laundries): when the items will be ready. */
+  pickupDueAt?: string;
 }
 
 export interface OrderOptions {
@@ -161,6 +163,14 @@ export function createOrder(ctx: AppContext, input: OrderInput, options: OrderOp
     store.kitchenTickets.set(ticketId, {
       id: ticketId, branchId: branch.id, orderId: order.id, receiptNumber: order.receiptNumber, channel: order.channel, orderType: order.type, tableLabel: table?.label,
       items: recordLines.map((line) => ({ name: line.name, quantity: line.quantity, notes: line.notes })), status: "new", createdAt
+    });
+  }
+  if (hasFeature(store.settings.businessType, "pickup_tickets") && fromPos) {
+    const ticketId = newId();
+    store.pickupTickets.set(ticketId, {
+      id: ticketId, branchId: branch.id, orderId: order.id, receiptNumber: order.receiptNumber, customerId: order.customerId,
+      items: recordLines.map((line) => ({ name: line.name, quantity: line.quantity, notes: line.notes })),
+      dueAt: input.pickupDueAt ?? new Date(Date.parse(createdAt) + 24 * 3_600_000).toISOString(), status: "received", createdAt
     });
   }
   enqueueStoreSync(ctx, recordLines.map((line) => line.productId));

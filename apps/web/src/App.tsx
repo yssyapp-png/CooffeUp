@@ -1,7 +1,7 @@
 import { useState, type ComponentType } from "react";
 import type { Feature, Permission } from "@cooffeup/shared";
 import {
-  BarChart3, Bike, BookOpen, CalendarClock, ChefHat, Coffee, LogOut, Plug, Receipt, ShieldCheck, ShoppingBag, Store, Users, Wallet, Wifi, WifiOff
+  BarChart3, Bike, BookOpen, ClipboardList, LayoutDashboard, PackageCheck, CalendarClock, ChefHat, Coffee, LogOut, Plug, Receipt, ShieldCheck, ShoppingBag, Store, Users, Wallet, Wifi, WifiOff
 } from "lucide-react";
 import { Login } from "./pages/Login";
 import { Pos } from "./pages/Pos";
@@ -16,6 +16,9 @@ import { Integrations } from "./pages/Integrations";
 import { Staff } from "./pages/Staff";
 import { Shift } from "./pages/Shift";
 import { Branches } from "./pages/Branches";
+import { Orders } from "./pages/Orders";
+import { Dashboard } from "./pages/Dashboard";
+import { Pickups } from "./pages/Pickups";
 import { LanguageProvider, useI18n, type StringKey } from "./i18n";
 import { useOnline } from "./offline";
 import { SessionProvider, useSession } from "./session";
@@ -32,9 +35,12 @@ interface PageDef {
 }
 
 const PAGES: PageDef[] = [
+  { id: "dashboard", label: "nav_dashboard", icon: LayoutDashboard, component: Dashboard, anyOf: ["reports.view"] },
   { id: "pos", label: "nav_pos", bilingual: true, icon: ShoppingBag, component: Pos, anyOf: ["pos.sell"] },
+  { id: "orders", label: "nav_orders", icon: ClipboardList, component: Orders, anyOf: ["pos.sell"] },
   { id: "channels", label: "nav_channels", icon: Bike, component: ChannelOrders, anyOf: ["delivery.manage"] },
   { id: "kitchen", label: "nav_kitchen", icon: ChefHat, component: Kitchen, anyOf: ["kitchen.view", "tables.manage"], features: ["kitchen", "tables"] },
+  { id: "pickups", label: "nav_pickups", icon: PackageCheck, component: Pickups, anyOf: ["pos.sell"], features: ["pickup_tickets"] },
   { id: "appointments", label: "nav_appointments", icon: CalendarClock, component: Appointments, anyOf: ["appointments.manage"], features: ["appointments"] },
   { id: "customers", label: "nav_customers", icon: Users, component: Customers, anyOf: ["customers.view"] },
   { id: "shift", label: "nav_shift", bilingual: true, icon: Wallet, component: Shift, anyOf: ["shifts.manage"] },

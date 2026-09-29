@@ -28,7 +28,8 @@ export const orderSchema = z.object({
   payments: z.array(z.object({ method: paymentMethod, amount: z.number().int().positive().max(100_000_000), reference: z.string().max(64).optional() })).max(5),
   customerId: z.string().optional(),
   tableId: z.string().optional(),
-  redeemReward: z.enum(["free_drink"]).optional()
+  redeemReward: z.enum(["free_drink"]).optional(),
+  pickupDueAt: z.string().datetime().optional()
 });
 
 const productSchema = z.object({
@@ -95,13 +96,32 @@ export function registerPosRoutes(app: FastifyInstance, ctx: AppContext) {
 
   // ---------- Orders ----------
   app.get("/api/v1/orders", guard("pos.sell"), async (request) => {
-    const query = parse(z.object({ limit: z.coerce.number().int().min(1).max(200).default(50) }), request.query);
-    return { data: [...store.orders.values()].slice(-query.limit).reverse() };
+    const query = parse(z.object({
+      limit: z.coerce.number().int().min(1).max(200).default(50),
+      q: z.string().trim().max(60).optional(),
+      status: z.enum(["paid", "partially_refunded", "refunded"]).optional(),
+      /** "all" lists every branch; only staff who are not tied to one branch may use it. */
+      scope: z.enum(["branch", "all"]).default("branch")
+    }), request.query);
+    if (query.scope === "all" && actor(request).branchId) fail(403, "BRANCH_NOT_ALLOWED");
+    const term = query.q?.toLowerCase();
+    const data = [...store.orders.values()].filter((order) =>
+      (query.scope === "all" || (order.branchId ?? MAIN_BRANCH_ID) === branchOf(request)) &&
+      (!query.status || order.status === query.status) &&
+      (!term || order.receiptNumber.toLowerCase().includes(term) || order.externalOrderId?.toLowerCase().includes(term) || order.offline?.localReceipt.toLowerCase().includes(term)));
+    return { data: data.slice(-query.limit).reverse() };
   });
 
-  app.get<{ Params: { id: string } }>("/api/v1/orders/:id", guard("pos.sell"), async (request) => ({
-    data: store.orders.get(request.params.id) ?? fail(404, "ORDER_NOT_FOUND")
-  }));
+  app.get<{ Params: { id: string } }>("/api/v1/orders/:id", guard("pos.sell"), async (request) => {
+    const order = store.orders.get(request.params.id) ?? fail(404, "ORDER_NOT_FOUND");
+    const customer = order.customerId ? store.customers.get(order.customerId) : undefined;
+    return {
+      data: order,
+      refunds: [...store.refunds.values()].filter((refund) => refund.orderId === order.id),
+      customerName: customer?.name,
+      invoiceUrl: `${ctx.config.publicBaseUrl}/i/${order.invoiceToken}`
+    };
+  });
 
   app.post("/api/v1/orders", guard("pos.sell"), async (request, reply) => {
     const key = idempotencyKey(request.headers["idempotency-key"]);

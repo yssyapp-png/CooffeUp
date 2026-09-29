@@ -423,6 +423,19 @@ describe("online stores (Zid & Salla)", () => {
   });
 });
 
+describe("order history", () => {
+  it("searches by receipt and returns refunds with the invoice link", async () => {
+    const order = (await sell("cashier", { type: "takeaway", lines: [{ productId: "espresso", quantity: 2 }], payments: [{ method: "mada", amount: 2_760 }] })).json().data;
+    await api("manager", "POST", `/api/v1/orders/${order.id}/refund`, { lines: [{ productId: "espresso", quantity: 1 }], reason: "طلب خاطئ" });
+    const found = (await api("cashier", "GET", `/api/v1/orders?q=${order.receiptNumber}`)).json().data;
+    expect(found.map((entry: { id: string }) => entry.id)).toEqual([order.id]);
+    expect((await api("cashier", "GET", "/api/v1/orders?status=partially_refunded")).json().data.some((entry: { id: string }) => entry.id === order.id)).toBe(true);
+    const detail = (await api("cashier", "GET", `/api/v1/orders/${order.id}`)).json();
+    expect(detail.refunds).toHaveLength(1);
+    expect(detail.invoiceUrl).toBe(`https://pos.example.sa/i/${order.invoiceToken}`);
+  });
+});
+
 describe("outbound URL guard", () => {
   it("allows only public HTTPS targets in production", () => {
     expect(isAllowedOutboundUrl("https://erp.example.sa/hooks", true)).toBe(true);

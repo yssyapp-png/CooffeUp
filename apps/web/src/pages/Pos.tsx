@@ -56,6 +56,7 @@ export function Pos() {
   const [receipt, setReceipt] = useState<Receipt | null>(null);
   const [panel, setPanel] = useState<"none" | "customer" | "held">("none");
   const [shiftBlocked, setShiftBlocked] = useState(false);
+  const [readyBy, setReadyBy] = useState("");
   const action = useAction();
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -114,7 +115,7 @@ export function Pos() {
   }
 
   function reset() {
-    setCart([]); setDiscount(""); setCustomer(null); setRedeem(false); setTableId(""); setPayments([{ method: "mada", amount: "" }]);
+    setCart([]); setDiscount(""); setCustomer(null); setRedeem(false); setTableId(""); setReadyBy(""); setPayments([{ method: "mada", amount: "" }]);
   }
 
   function payload() {
@@ -124,6 +125,7 @@ export function Pos() {
       ...(discountValue ? { orderDiscount: discountValue } : {}),
       ...(customer ? { customerId: customer.id } : {}),
       ...(reward ? { redeemReward: "free_drink" as const } : {}),
+      ...(hasFeature("pickup_tickets") && readyBy ? { pickupDueAt: new Date(readyBy).toISOString() } : {}),
       ...(orderType === "dine_in" && tableId ? { tableId } : {})
     };
   }
@@ -155,7 +157,7 @@ export function Pos() {
     if (!cart.length) return;
     const label = window.prompt(t("holdPrompt"), customer?.name ?? `${t("cart")} ${held.length + 1}`);
     if (!label) return;
-    const { redeemReward: _reward, ...rest } = payload();
+    const { redeemReward: _reward, pickupDueAt: _due, ...rest } = payload();
     const entry: HeldCart = { id: crypto.randomUUID(), label, payload: rest, heldBy: staff.id, heldAt: new Date().toISOString() };
     const next = [entry, ...held];
     setHeld(next); writeHeldCarts(next); reset();
@@ -229,6 +231,7 @@ export function Pos() {
           <button onClick={() => { setCustomer(null); setRedeem(false); }} aria-label={t("removeCustomer")}><X size={14} /></button>
         </div>
         : <button className="ghost small" onClick={() => setPanel(panel === "customer" ? "none" : "customer")}><UserPlus size={15} /> {t("addCustomer")}</button>)}
+      {hasFeature("pickup_tickets") && <label className="inline-field">{t("readyBy")}<input type="datetime-local" value={readyBy} onChange={(event) => setReadyBy(event.target.value)} /></label>}
       {canRedeem && <label className="check reward"><input type="checkbox" checked={redeem} onChange={(event) => setRedeem(event.target.checked)} /> <Gift size={15} /> {t("freeDrink")}</label>}
       {panel === "customer" && <CustomerPicker onPick={(picked) => { setCustomer(picked); setRedeem(false); setPanel("none"); }} canCreate={can("customers.manage")} />}
 

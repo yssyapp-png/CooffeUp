@@ -1,6 +1,6 @@
 import type {
   Appointment, Branch, BusinessType, DeliveryPlatform, DiningTable, EcommercePlatform, ExpenseRecord, ExternalOrderStatus, HeldCart,
-  JournalEntry, KitchenTicket, LoyaltyTier, NormalizedExternalOrder, OrderRecord, Permission, Product, PurchaseRecord, RefundRecord,
+  JournalEntry, KitchenTicket, LoyaltyTier, NormalizedExternalOrder, PickupTicket, OrderRecord, Permission, Product, PurchaseRecord, RefundRecord,
   Role, ShiftRecord, StockMovement, StockTransfer
 } from "@cooffeup/shared";
 import { DELIVERY_PLATFORMS, DELIVERY_PLATFORM_IDS } from "@cooffeup/shared";
@@ -193,7 +193,7 @@ const SNAPSHOT_VERSION = 2;
 const MAP_KEYS = [
   "products", "orders", "idempotency", "idempotencyFingerprints", "refundRequests", "loyalty", "cashMovements", "refunds", "customers",
   "purchases", "expenses", "shifts", "staff", "tables", "kitchenTickets", "appointments", "heldCarts", "externalOrders", "ecommerce",
-  "delivery", "syncJobs", "webhooks", "webhookDeliveries", "sms", "branches", "stockLevels", "transfers"
+  "delivery", "syncJobs", "webhooks", "webhookDeliveries", "sms", "branches", "stockLevels", "transfers", "pickupTickets"
 ] as const;
 const ARRAY_KEYS = ["movements", "journal", "loyaltyLedger", "integrationLog", "audit"] as const;
 
@@ -240,6 +240,7 @@ export class Store {
   /** branchId → productId → quantity on hand. Product.stock always holds the total across branches. */
   stockLevels = new Map<string, Record<string, number>>();
   transfers = new Map<string, StockTransfer>();
+  pickupTickets = new Map<string, PickupTicket>();
   audit: AuditEntry[] = [];
   private receiptSequence = 1000;
   private journalSequence = 0;
