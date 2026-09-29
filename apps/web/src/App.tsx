@@ -1,49 +1,69 @@
-import { useEffect, useMemo, useState } from "react";
-import { calculateTotals, formatSar, type Product } from "@cooffeup/shared";
-import { Coffee, Minus, Plus, Search, ShoppingBag, Trash2, Wifi } from "lucide-react";
+import { useState, type ComponentType } from "react";
+import type { Feature, Permission } from "@cooffeup/shared";
+import {
+  BarChart3, Bike, BookOpen, CalendarClock, ChefHat, Coffee, LogOut, Plug, Receipt, ShieldCheck, ShoppingBag, Users, Wallet, Wifi, WifiOff
+} from "lucide-react";
+import { Login } from "./pages/Login";
+import { Pos } from "./pages/Pos";
+import { ChannelOrders } from "./pages/ChannelOrders";
+import { Kitchen } from "./pages/Kitchen";
+import { Appointments } from "./pages/Appointments";
+import { Customers } from "./pages/Customers";
+import { Purchases } from "./pages/Purchases";
+import { Accounting } from "./pages/Accounting";
+import { Reports } from "./pages/Reports";
+import { Integrations } from "./pages/Integrations";
+import { Staff } from "./pages/Staff";
+import { Shift } from "./pages/Shift";
+import { useOnline } from "./offline";
+import { SessionProvider, useSession } from "./session";
 
-type CartItem = Product & { quantity: number };
-const API = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
+interface PageDef {
+  id: string;
+  label: string;
+  icon: ComponentType<{ size?: number }>;
+  component: ComponentType;
+  anyOf: Permission[];
+  features?: Feature[];
+}
+
+const PAGES: PageDef[] = [
+  { id: "pos", label: "نقطة البيع", icon: ShoppingBag, component: Pos, anyOf: ["pos.sell"] },
+  { id: "channels", label: "الطلبات الموحدة", icon: Bike, component: ChannelOrders, anyOf: ["delivery.manage"] },
+  { id: "kitchen", label: "المطبخ والطاولات", icon: ChefHat, component: Kitchen, anyOf: ["kitchen.view", "tables.manage"], features: ["kitchen", "tables"] },
+  { id: "appointments", label: "المواعيد", icon: CalendarClock, component: Appointments, anyOf: ["appointments.manage"], features: ["appointments"] },
+  { id: "customers", label: "العملاء", icon: Users, component: Customers, anyOf: ["customers.view"] },
+  { id: "shift", label: "الوردية والصندوق", icon: Wallet, component: Shift, anyOf: ["shifts.manage"] },
+  { id: "purchases", label: "المشتريات والمصروفات", icon: Receipt, component: Purchases, anyOf: ["purchases.manage", "expenses.manage"] },
+  { id: "accounting", label: "المحاسبة", icon: BookOpen, component: Accounting, anyOf: ["accounting.view"] },
+  { id: "reports", label: "التقارير", icon: BarChart3, component: Reports, anyOf: ["reports.view"] },
+  { id: "integrations", label: "الربط والمنصات", icon: Plug, component: Integrations, anyOf: ["integrations.manage"] },
+  { id: "staff", label: "الموظفون والصلاحيات", icon: ShieldCheck, component: Staff, anyOf: ["staff.manage"] }
+];
+
+function Shell() {
+  const { staff, settings, can, hasFeature, logout } = useSession();
+  const online = useOnline();
+  const pages = PAGES.filter((page) => page.anyOf.some(can) && (!page.features || page.features.some(hasFeature)));
+  const [active, setActive] = useState(pages[0]?.id);
+  const Page = pages.find((page) => page.id === active)?.component;
+
+  return <div className="app">
+    <aside className="sidebar">
+      <div className="brand"><span><Coffee size={22} /></span><div><b>CooffeUp</b><small>{settings.branchName || settings.sector.nameAr}</small></div></div>
+      <nav aria-label="الأقسام">{pages.map((page) => <button key={page.id} className={page.id === active ? "active" : ""} onClick={() => setActive(page.id)}>
+        <page.icon size={18} /><span>{page.label}</span>
+      </button>)}</nav>
+      <div className="sidebar-foot">
+        <div className={`status ${online ? "" : "offline"}`}>{online ? <><Wifi size={15} /> متصل</> : <><WifiOff size={15} /> بلا إنترنت — البيع مستمر</>}</div>
+        <div className="me"><b>{staff.name}</b><small>{staff.roleLabel}</small></div>
+        <button className="ghost" onClick={logout}><LogOut size={16} /> خروج</button>
+      </div>
+    </aside>
+    <main className="content">{Page ? <Page /> : <p className="muted center">لا توجد أقسام متاحة لصلاحياتك</p>}</main>
+  </div>;
+}
 
 export function App() {
-  const [products,setProducts] = useState<Product[]>([]);
-  const [cart,setCart] = useState<CartItem[]>([]);
-  const [query,setQuery] = useState("");
-  const [busy,setBusy] = useState(false);
-  const [message,setMessage] = useState("");
-  useEffect(() => { fetch(`${API}/api/v1/products`).then(r=>r.json()).then(r=>setProducts(r.data)).catch(()=>setMessage("تعذر الاتصال بالخادم")); }, []);
-  const visible = products.filter(p => `${p.nameAr} ${p.nameEn} ${p.sku}`.toLowerCase().includes(query.toLowerCase()));
-  const totals = useMemo(() => calculateTotals(cart.map(p=>({productId:p.id,name:p.nameAr,unitPrice:p.price,quantity:p.quantity,taxRateBps:p.taxRateBps}))),[cart]);
-  const add = (product:Product) => setCart(current => current.some(p=>p.id===product.id) ? current.map(p=>p.id===product.id?{...p,quantity:p.quantity+1}:p) : [...current,{...product,quantity:1}]);
-  const quantity = (id:string,delta:number) => setCart(current=>current.map(p=>p.id===id?{...p,quantity:p.quantity+delta}:p).filter(p=>p.quantity>0));
-  async function checkout() {
-    if (!cart.length || busy) return;
-    setBusy(true); setMessage("");
-    try {
-      const response = await fetch(`${API}/api/v1/orders`,{method:"POST",headers:{"content-type":"application/json","idempotency-key":crypto.randomUUID()},body:JSON.stringify({type:"takeaway",lines:cart.map(p=>({productId:p.id,quantity:p.quantity})),payments:[{method:"mada",amount:totals.total}]})});
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.error ?? "فشل الدفع");
-      setMessage(`تم الدفع — الإيصال ${body.data.receiptNumber}`); setCart([]);
-    } catch (error) { setMessage(error instanceof Error ? error.message : "حدث خطأ"); } finally { setBusy(false); }
-  }
-  return <div className="shell">
-    <header><div className="brand"><span><Coffee size={22}/></span><div><b>CooffeUp</b><small>نقطة البيع</small></div></div><div className="status"><Wifi size={16}/> النظام متصل وآمن</div><button className="cashier">عبدالله · كاشير</button></header>
-    <main>
-      <section className="catalog">
-        <div className="title"><div><p>الوردية الصباحية</p><h1>اختر المنتجات</h1></div><div className="search"><Search size={19}/><input aria-label="بحث" placeholder="ابحث بالاسم أو الرمز" value={query} onChange={e=>setQuery(e.target.value)}/></div></div>
-        <nav><button className="active">الكل</button><button>القهوة</button><button>المشروبات الباردة</button><button>المخبوزات</button></nav>
-        <div className="products">{visible.map(p=><button className="product" key={p.id} onClick={()=>add(p)} disabled={p.stock===0}>
-          <span className="cup"><Coffee/></span><span className="stock">متوفر {p.stock}</span><h3>{p.nameAr}</h3><small>{p.nameEn}</small><strong>{formatSar(p.price)}</strong>
-        </button>)}</div>
-      </section>
-      <aside>
-        <div className="order-title"><div><ShoppingBag/><div><h2>الطلب الحالي</h2><small>{cart.reduce((s,p)=>s+p.quantity,0)} أصناف</small></div></div><button onClick={()=>setCart([])}>مسح</button></div>
-        <div className="order-type"><button>محلي</button><button className="selected">سفري</button><button>توصيل</button></div>
-        <div className="lines">{cart.length===0?<div className="empty"><ShoppingBag/><p>السلة فارغة</p><small>اختر منتجًا لبدء الطلب</small></div>:cart.map(p=><div className="line" key={p.id}><div><b>{p.nameAr}</b><small>{formatSar(p.price)}</small></div><div className="stepper"><button onClick={()=>quantity(p.id,-1)}>{p.quantity===1?<Trash2/>:<Minus/>}</button><span>{p.quantity}</span><button onClick={()=>quantity(p.id,1)}><Plus/></button></div></div>)}</div>
-        <div className="summary"><p><span>المجموع قبل الضريبة</span><b>{formatSar(totals.taxable)}</b></p><p><span>ضريبة القيمة المضافة (15%)</span><b>{formatSar(totals.tax)}</b></p><div><span>الإجمالي</span><strong>{formatSar(totals.total)}</strong></div></div>
-        {message&&<div className="message" role="status">{message}</div>}
-        <button className="pay" onClick={checkout} disabled={!cart.length||busy}>{busy?"جارٍ تنفيذ الدفع...":`دفع ${formatSar(totals.total)}`}</button>
-      </aside>
-    </main>
-  </div>;
+  return <SessionProvider login={(onLogin) => <Login onLogin={onLogin} />}><Shell /></SessionProvider>;
 }

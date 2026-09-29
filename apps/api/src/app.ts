@@ -2,54 +2,95 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
-import { calculateTotals } from "@cooffeup/shared";
-import { z } from "zod";
-import { idempotency, nextReceipt, orders, products, type StoredOrder } from "./store.js";
+import { loadConfig } from "./config.js";
+import { HttpError, type AppContext, type FetchLike } from "./context.js";
+import { registerAuthRoutes } from "./routes/auth.js";
+import { registerChannelRoutes } from "./routes/channels.js";
+import { registerCustomerRoutes } from "./routes/customers.js";
+import { registerFinanceRoutes } from "./routes/finance.js";
+import { registerOperationsRoutes } from "./routes/operations.js";
+import { registerPosRoutes } from "./routes/pos.js";
+import { Crypto } from "./security.js";
+import { addStaff, seedDemoData, Store } from "./store.js";
 
-const orderSchema = z.object({
-  type: z.enum(["dine_in", "takeaway", "delivery"]),
-  lines: z.array(z.object({productId:z.string().min(1),quantity:z.number().int().positive().max(99),discount:z.number().int().nonnegative().optional(),notes:z.string().max(250).optional()})).min(1).max(100),
-  payments: z.array(z.object({method:z.enum(["cash","card","mada","apple_pay","stc_pay"]),amount:z.number().int().positive()})).min(1).max(5)
-});
+declare module "fastify" {
+  interface FastifyInstance {
+    ctx: AppContext;
+  }
+}
 
-export async function buildApp() {
-  const app = Fastify({ logger: process.env.NODE_ENV !== "test", bodyLimit: 256_000, requestIdHeader: "x-request-id" });
-  await app.register(helmet);
-  await app.register(rateLimit, { max: 120, timeWindow: "1 minute" });
-  await app.register(cors, { origin: process.env.WEB_ORIGIN ?? "http://localhost:5173", credentials: true });
+export interface BuildOptions {
+  env?: NodeJS.ProcessEnv;
+  fetch?: FetchLike;
+}
 
-  app.get("/health", async () => ({ok:true,service:"cooffeup-api",time:new Date().toISOString()}));
-  app.get("/api/v1/products", async () => ({data:[...products.values()].filter((p) => p.active)}));
-  app.get("/api/v1/orders", async () => ({data:[...orders.values()].slice(-50).reverse()}));
+export async function buildApp(options: BuildOptions = {}) {
+  const env = options.env ?? process.env;
+  const config = loadConfig(env);
+  const app = Fastify({ logger: config.env !== "test", bodyLimit: 256_000, requestIdHeader: "x-request-id", trustProxy: config.env === "production" });
 
-  app.post("/api/v1/orders", async (request, reply) => {
-    const key = request.headers["idempotency-key"];
-    if (typeof key !== "string" || key.length < 8 || key.length > 100) return reply.code(400).send({error:"VALID_IDEMPOTENCY_KEY_REQUIRED"});
-    const existing = idempotency.get(key);
-    if (existing) return reply.code(200).send({data:existing,replayed:true});
-    const parsed = orderSchema.safeParse(request.body);
-    if (!parsed.success) return reply.code(422).send({error:"INVALID_ORDER",issues:parsed.error.issues});
-
-    const cart = [];
-    for (const input of parsed.data.lines) {
-      const product = products.get(input.productId);
-      if (!product?.active) return reply.code(404).send({error:"PRODUCT_NOT_FOUND",productId:input.productId});
-      if (product.stock < input.quantity) return reply.code(409).send({error:"INSUFFICIENT_STOCK",productId:product.id,available:product.stock});
-      cart.push({productId:product.id,name:product.nameAr,unitPrice:product.price,quantity:input.quantity,taxRateBps:product.taxRateBps,discount:input.discount,notes:input.notes});
+  const timers = new Set<NodeJS.Timeout>();
+  const running = new Set<Promise<void>>();
+  let dueNow = 0;
+  let closed = false;
+  const ctx: AppContext = {
+    config,
+    store: new Store({ businessType: config.businessType, sellerName: config.sellerName, sellerVat: config.sellerVat, branchName: "الفرع الرئيسي" }),
+    crypto: new Crypto(config.encryptionKey, config.authSecret),
+    fetch: options.fetch ?? ((url, init) => fetch(url, init)),
+    schedule(task, delay = 0) {
+      if (closed) return;
+      if (delay === 0) dueNow += 1;
+      const timer = setTimeout(() => {
+        timers.delete(timer);
+        if (delay === 0) dueNow -= 1;
+        const promise = task().catch((error) => app.log.error(error)).finally(() => running.delete(promise));
+        running.add(promise);
+      }, delay);
+      timer.unref();
+      timers.add(timer);
+    },
+    async flush() {
+      while (dueNow > 0 || running.size > 0) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        await Promise.all([...running]);
+      }
     }
-    const totals = calculateTotals(cart);
-    const paid = parsed.data.payments.reduce((sum, payment) => sum + payment.amount, 0);
-    if (paid < totals.total) return reply.code(422).send({error:"PAYMENT_SHORT",due:totals.total-paid});
-
-    for (const line of cart) products.get(line.productId)!.stock -= line.quantity;
-    const order: StoredOrder = {
-      id:crypto.randomUUID(), receiptNumber:nextReceipt(), type:parsed.data.type, status:"paid",
-      lines:cart.map(({productId,quantity,unitPrice,name}) => ({productId,quantity,unitPrice,name})),
-      payments:parsed.data.payments, totals, createdAt:new Date().toISOString()
-    };
-    orders.set(order.id, order);
-    idempotency.set(key, order);
-    return reply.code(201).send({data:order,change:paid-totals.total});
+  };
+  app.decorate("ctx", ctx);
+  app.addHook("onClose", async () => {
+    closed = true;
+    for (const timer of timers) clearTimeout(timer);
   });
+
+  if (config.seedDemoData) seedDemoData(ctx.store);
+  if (env.OWNER_PIN && ctx.store.staff.size === 0) addStaff(ctx.store, { id: "owner", name: "المالك", role: "owner", pin: env.OWNER_PIN });
+
+  // Keep the raw body so webhook signatures can be verified byte-for-byte.
+  const parseJson = app.getDefaultJsonParser("error", "error");
+  app.removeContentTypeParser("application/json");
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    request.rawBody = body as string;
+    parseJson(request, body as string, done);
+  });
+
+  app.setErrorHandler((error, request, reply) => {
+    if (error instanceof HttpError) return reply.code(error.status).send({ error: error.code, ...error.details });
+    const status = (error as { statusCode?: number }).statusCode ?? 500;
+    if (status >= 500) request.log.error(error);
+    return reply.code(status).send({ error: status >= 500 ? "INTERNAL_ERROR" : (error as Error).message });
+  });
+
+  await app.register(helmet);
+  await app.register(rateLimit, { max: config.rateLimitMax, timeWindow: "1 minute" });
+  await app.register(cors, { origin: config.webOrigin, credentials: true, methods: ["GET", "POST", "PUT", "PATCH", "DELETE"] });
+
+  app.get("/health", async () => ({ ok: true, service: "cooffeup-api", time: new Date().toISOString() }));
+  registerAuthRoutes(app, ctx);
+  registerPosRoutes(app, ctx);
+  registerCustomerRoutes(app, ctx);
+  registerFinanceRoutes(app, ctx);
+  registerChannelRoutes(app, ctx);
+  registerOperationsRoutes(app, ctx);
   return app;
 }
