@@ -38,7 +38,7 @@ function applyReward(lines: CartLine[], products: Product[]): { lines: CartLine[
 
 export function Pos() {
   const { staff, settings, can, hasFeature } = useSession();
-  const { t, lang, locale, productName } = useI18n();
+  const { t, tx, lang, locale, productName } = useI18n();
   const sar = (value: number) => formatSar(value, locale);
   const sync = useOutboxSync(can("pos.sell"));
   const [products, setProducts] = useState<Product[]>(cachedCatalog);
@@ -185,7 +185,7 @@ export function Pos() {
   return <div className="pos">
     <section className="catalog">
       <div className="title">
-        <div><p>{settings.sector.nameAr} · {staff.name}</p><h1>{t("chooseProducts")}</h1></div>
+        <div><p>{tx(settings.sector.nameAr)} · {staff.name}</p><h1>{t("chooseProducts")}</h1></div>
         <div className="search"><Search size={19} /><input ref={searchRef} aria-label={t("searchPlaceholder")} placeholder={t("searchPlaceholder")} value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={onSearchKey} /></div>
       </div>
       {blocked && <Notice tone="warning">{t("shiftRequired")}</Notice>}
@@ -196,7 +196,7 @@ export function Pos() {
         {sync.needsReview.map((entry) => <span key={entry.id} className="review">{entry.localReceipt}: {entry.lastError} <button onClick={() => sync.discard(entry.id)}>{t("ignore")}</button></span>)}
       </div>}
       <nav className="chips"><button className={category === "all" ? "active" : ""} onClick={() => setCategory("all")}>{t("all")}</button>
-        {categories.map((name) => <button key={name} className={category === name ? "active" : ""} onClick={() => setCategory(name)}>{name}</button>)}</nav>
+        {categories.map((name) => <button key={name} className={category === name ? "active" : ""} onClick={() => setCategory(name)}>{tx(name)}</button>)}</nav>
       <div className="products">{visible.map((product) => <button className="product" key={product.id} onClick={() => add(product)} disabled={product.stock <= 0 && sync.online}>
         <span className="cup"><Coffee /></span><span className={`stock ${product.stock <= (product.reorderLevel ?? 0) ? "low" : ""}`}>{product.stock <= 0 ? t("soldOut") : `${t("inStock")} ${product.stock}`}</span>
         <h3>{productName(product)}</h3><small>{lang === "ar" ? product.nameEn : product.nameAr}</small><strong>{sar(product.price)}</strong>

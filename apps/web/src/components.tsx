@@ -1,32 +1,34 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { formatSar, type ReportColumn, type ReportResult, type ReportRow } from "@cooffeup/shared";
 import { errorMessage } from "./api";
+import { useI18n, type Language } from "./i18n";
+import { toEnglish } from "./labels";
 
-const dateTime = new Intl.DateTimeFormat("ar-SA", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Riyadh" });
-const numberFormat = new Intl.NumberFormat("ar-SA");
-
-export function formatCell(value: ReportRow[string], kind: ReportColumn["kind"]): string {
+export function formatCell(value: ReportRow[string], kind: ReportColumn["kind"], lang: Language = "ar", translate: (text: string) => string = toEnglish): string {
   if (value === null || value === undefined || value === "") return "—";
-  if (typeof value === "string" && kind !== "date" && kind !== "datetime") return value;
+  if (typeof value === "string" && kind !== "date" && kind !== "datetime") return lang === "ar" ? value : translate(value);
+  const locale = lang === "ar" ? "ar-SA" : "en-SA";
   switch (kind) {
-    case "money": return formatSar(Number(value));
-    case "percent": return `${numberFormat.format(Number(value) / 100)}%`;
-    case "number": return numberFormat.format(Number(value));
-    case "datetime": return dateTime.format(new Date(String(value)));
+    case "money": return formatSar(Number(value), locale);
+    case "percent": return `${new Intl.NumberFormat(locale).format(Number(value) / 100)}%`;
+    case "number": return new Intl.NumberFormat(locale).format(Number(value));
+    case "datetime": return new Intl.DateTimeFormat(lang === "ar" ? "ar-SA" : "en-GB", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Riyadh" }).format(new Date(String(value)));
     case "date": return String(value);
     default: return String(value);
   }
 }
 
-export function DataTable({ result, empty = "لا توجد بيانات للفترة المحددة" }: { result: ReportResult; empty?: string }) {
-  if (!result.rows.length) return <p className="muted center">{empty}</p>;
+/** `translate` overrides how text cells become English (channel reports use their own mapping). */
+export function DataTable({ result, empty, translate }: { result: ReportResult; empty?: string; translate?: (text: string) => string }) {
+  const { lang, L, tx } = useI18n();
+  if (!result.rows.length) return <p className="muted center">{empty ?? L("لا توجد بيانات للفترة المحددة", "No data for the selected period")}</p>;
   return <div className="table-wrap">
     <table>
-      <thead><tr>{result.columns.map((column) => <th key={column.key}>{column.labelAr}</th>)}</tr></thead>
+      <thead><tr>{result.columns.map((column) => <th key={column.key}>{tx(column.labelAr)}</th>)}</tr></thead>
       <tbody>{result.rows.map((row, index) => <tr key={index}>{result.columns.map((column) => {
         // Summary-style reports carry the format of their "value" cell on each row.
         const kind = column.key === "value" && typeof row.kind === "string" ? row.kind as ReportColumn["kind"] : column.kind;
-        return <td key={column.key} className={kind === "money" || kind === "number" || kind === "percent" ? "num" : ""}>{formatCell(row[column.key], kind)}</td>;
+        return <td key={column.key} className={kind === "money" || kind === "number" || kind === "percent" ? "num" : ""}>{formatCell(row[column.key], kind, lang, translate)}</td>;
       })}</tr>)}</tbody>
     </table>
   </div>;

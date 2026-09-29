@@ -3,15 +3,20 @@ import type { ReportCategory, ReportResult } from "@cooffeup/shared";
 import { Download, Play } from "lucide-react";
 import { api } from "../api";
 import { DataTable, formatCell, Notice, PageHeader, todayRiyadh, useAction, useLoad } from "../components";
+import { useI18n } from "../i18n";
+import { channelCellToEnglish } from "../labels";
+
+/** Reports whose rows name sales channels, which need the channel-aware translation. */
+const CHANNEL_REPORTS = new Set(["sales_by_channel", "delivery_platforms"]);
 import { useSession } from "../session";
 
 interface ReportMeta { id: string; nameAr: string; category: ReportCategory; descriptionAr: string; usesRange: boolean }
 
 const monthStart = () => `${todayRiyadh().slice(0, 8)}01`;
 
-function toCsv(result: ReportResult) {
+function toCsv(result: ReportResult, lang: "ar" | "en", tx: (text: string) => string) {
   const escape = (value: string) => (/[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value);
-  const lines = [result.columns.map((column) => column.labelAr), ...result.rows.map((row) => result.columns.map((column) => formatCell(row[column.key], column.kind)))];
+  const lines = [result.columns.map((column) => tx(column.labelAr)), ...result.rows.map((row) => result.columns.map((column) => formatCell(row[column.key], column.kind, lang)))];
   return `﻿${lines.map((line) => line.map(escape).join(",")).join("\n")}`;
 }
 
@@ -19,6 +24,7 @@ export function Reports() {
   const catalog = useLoad(() => api<{ data: ReportMeta[]; categories: Record<ReportCategory, string> }>("/api/v1/reports"));
   const [selected, setSelected] = useState<ReportMeta | null>(null);
   const { branches } = useSession();
+  const { L, tx, lang } = useI18n();
   const [range, setRange] = useState({ from: monthStart(), to: todayRiyadh() });
   const [branchFilter, setBranchFilter] = useState("");
   const [result, setResult] = useState<ReportResult | null>(null);
@@ -36,39 +42,39 @@ export function Reports() {
 
   function exportCsv() {
     if (!result || !selected) return;
-    const url = URL.createObjectURL(new Blob([toCsv(result)], { type: "text/csv;charset=utf-8" }));
+    const url = URL.createObjectURL(new Blob([toCsv(result, lang, tx)], { type: "text/csv;charset=utf-8" }));
     Object.assign(document.createElement("a"), { href: url, download: `${selected.id}-${range.from}-${range.to}.csv` }).click();
     URL.revokeObjectURL(url);
   }
 
   const categories = catalog.data ? Object.entries(catalog.data.categories) as Array<[ReportCategory, string]> : [];
   return <div className="page">
-    <PageHeader eyebrow={`${catalog.data?.data.length ?? ""} تقريرًا دوريًا`} title="التقارير" actions={<>
-      <label className="inline-field">من<input type="date" value={range.from} onChange={(event) => setRange({ ...range, from: event.target.value })} /></label>
-      <label className="inline-field">إلى<input type="date" value={range.to} onChange={(event) => setRange({ ...range, to: event.target.value })} /></label>
-      {branches.length > 1 && <label className="inline-field">الفرع<select value={branchFilter} onChange={(event) => setBranchFilter(event.target.value)}>
-        <option value="">كل الفروع</option>{branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>}
+    <PageHeader eyebrow={`${catalog.data?.data.length ?? ""} ${L("تقريرًا دوريًا", "periodic reports")}`} title={L("التقارير", "Reports")} actions={<>
+      <label className="inline-field">{L("من", "From")}<input type="date" value={range.from} onChange={(event) => setRange({ ...range, from: event.target.value })} /></label>
+      <label className="inline-field">{L("إلى", "To")}<input type="date" value={range.to} onChange={(event) => setRange({ ...range, to: event.target.value })} /></label>
+      {branches.length > 1 && <label className="inline-field">{L("الفرع", "Branch")}<select value={branchFilter} onChange={(event) => setBranchFilter(event.target.value)}>
+        <option value="">{L("كل الفروع", "All branches")}</option>{branches.map((branch) => <option key={branch.id} value={branch.id}>{tx(branch.name)}</option>)}</select></label>}
     </>} />
     {catalog.error && <Notice tone="error">{catalog.error}</Notice>}
     <div className="reports">
-      <nav className="report-list" aria-label="التقارير">{categories.map(([category, label]) => <div key={category}>
-        <h4>{label}</h4>
+      <nav className="report-list" aria-label={L("التقارير", "Reports")}>{categories.map(([category, label]) => <div key={category}>
+        <h4>{tx(label)}</h4>
         {catalog.data!.data.filter((report) => report.category === category).map((report) => <button key={report.id} className={selected?.id === report.id ? "active" : ""} onClick={() => run(report)}>
-          {report.nameAr}
+          {tx(report.nameAr)}
         </button>)}
       </div>)}</nav>
       <section className="card report-view">
-        {!selected ? <p className="muted center">اختر تقريرًا من القائمة</p> : <>
+        {!selected ? <p className="muted center">{L("اختر تقريرًا من القائمة", "Choose a report from the list")}</p> : <>
           <div className="row between">
-            <div><h3>{selected.nameAr}</h3><small className="muted">{selected.descriptionAr}{selected.usesRange ? ` · ${range.from} إلى ${range.to}` : " · الوضع الحالي"}</small></div>
-            <div className="row"><button className="ghost small" onClick={() => run(selected)}><Play size={14} /> تحديث</button>
+            <div><h3>{tx(selected.nameAr)}</h3><small className="muted">{tx(selected.descriptionAr)}{selected.usesRange ? ` · ${range.from} ${L("إلى", "to")} ${range.to}` : ` · ${L("الوضع الحالي", "current position")}`}</small></div>
+            <div className="row"><button className="ghost small" onClick={() => run(selected)}><Play size={14} /> {L("تحديث", "Refresh")}</button>
               <button className="ghost small" onClick={exportCsv} disabled={!result}><Download size={14} /> CSV</button>
-              <button className="ghost small" onClick={() => window.print()} disabled={!result}>طباعة</button></div>
+              <button className="ghost small" onClick={() => window.print()} disabled={!result}>{L("طباعة", "Print")}</button></div>
           </div>
           {action.message && <Notice tone={action.message.tone}>{action.message.text}</Notice>}
-          {action.busy && <p className="muted">جارٍ التحميل…</p>}
-          {result?.summary && <div className="stats">{result.summary.map((item) => <div key={item.labelAr}><small>{item.labelAr}</small><b>{formatCell(item.value, item.kind)}</b></div>)}</div>}
-          {result && <DataTable result={result} />}
+          {action.busy && <p className="muted">{L("جارٍ التحميل…", "Loading…")}</p>}
+          {result?.summary && <div className="stats">{result.summary.map((item) => <div key={item.labelAr}><small>{tx(item.labelAr)}</small><b>{formatCell(item.value, item.kind, lang)}</b></div>)}</div>}
+          {result && <DataTable result={result} translate={CHANNEL_REPORTS.has(selected.id) ? channelCellToEnglish : undefined} />}
         </>}
       </section>
     </div>

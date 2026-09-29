@@ -26,8 +26,6 @@ import { SessionProvider, useSession } from "./session";
 interface PageDef {
   id: string;
   label: StringKey;
-  /** Translated screens follow the chosen language; back-office screens stay Arabic right-to-left. */
-  bilingual?: boolean;
   icon: ComponentType<{ size?: number }>;
   component: ComponentType;
   anyOf: Permission[];
@@ -36,14 +34,14 @@ interface PageDef {
 
 const PAGES: PageDef[] = [
   { id: "dashboard", label: "nav_dashboard", icon: LayoutDashboard, component: Dashboard, anyOf: ["reports.view"] },
-  { id: "pos", label: "nav_pos", bilingual: true, icon: ShoppingBag, component: Pos, anyOf: ["pos.sell"] },
+  { id: "pos", label: "nav_pos", icon: ShoppingBag, component: Pos, anyOf: ["pos.sell"] },
   { id: "orders", label: "nav_orders", icon: ClipboardList, component: Orders, anyOf: ["pos.sell"] },
   { id: "channels", label: "nav_channels", icon: Bike, component: ChannelOrders, anyOf: ["delivery.manage"] },
   { id: "kitchen", label: "nav_kitchen", icon: ChefHat, component: Kitchen, anyOf: ["kitchen.view", "tables.manage"], features: ["kitchen", "tables"] },
   { id: "pickups", label: "nav_pickups", icon: PackageCheck, component: Pickups, anyOf: ["pos.sell"], features: ["pickup_tickets"] },
   { id: "appointments", label: "nav_appointments", icon: CalendarClock, component: Appointments, anyOf: ["appointments.manage"], features: ["appointments"] },
   { id: "customers", label: "nav_customers", icon: Users, component: Customers, anyOf: ["customers.view"] },
-  { id: "shift", label: "nav_shift", bilingual: true, icon: Wallet, component: Shift, anyOf: ["shifts.manage"] },
+  { id: "shift", label: "nav_shift", icon: Wallet, component: Shift, anyOf: ["shifts.manage"] },
   { id: "purchases", label: "nav_purchases", icon: Receipt, component: Purchases, anyOf: ["purchases.manage", "expenses.manage"] },
   { id: "accounting", label: "nav_accounting", icon: BookOpen, component: Accounting, anyOf: ["accounting.view"] },
   { id: "reports", label: "nav_reports", icon: BarChart3, component: Reports, anyOf: ["reports.view"] },
@@ -56,7 +54,7 @@ function Shell() {
   const { staff, settings, can, hasFeature, logout, branches, branchId, switchBranch } = useSession();
   const selectable = branches.filter((branch) => branch.active);
   const online = useOnline();
-  const { t, toggle, lang } = useI18n();
+  const { t, tx, toggle, lang } = useI18n();
   const pages = PAGES.filter((page) => page.anyOf.some(can) && (!page.features || page.features.some(hasFeature)));
   const [active, setActive] = useState(pages[0]?.id);
   const current = pages.find((page) => page.id === active);
@@ -64,10 +62,10 @@ function Shell() {
 
   return <div className="app">
     <aside className="sidebar">
-      <div className="brand"><span><Coffee size={22} /></span><div><b>CooffeUp</b><small>{branches.find((branch) => branch.id === branchId)?.name ?? (settings.branchName || settings.sector.nameAr)}</small></div></div>
+      <div className="brand"><span><Coffee size={22} /></span><div><b>CooffeUp</b><small>{tx(branches.find((branch) => branch.id === branchId)?.name ?? (settings.branchName || settings.sector.nameAr))}</small></div></div>
       {!staff.branchId && selectable.length > 1 && <label className="branch-picker">{t("branch")}
         <select value={branchId} onChange={(event) => switchBranch(event.target.value)}>
-          {selectable.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}{branch.kind === "temporary" ? ` (${t("booth")})` : ""}</option>)}
+          {selectable.map((branch) => <option key={branch.id} value={branch.id}>{tx(branch.name)}{branch.kind === "temporary" ? ` (${t("booth")})` : ""}</option>)}
         </select>
       </label>}
       <nav aria-label={lang === "ar" ? "الأقسام" : "Sections"}>{pages.map((page) => <button key={page.id} className={page.id === active ? "active" : ""} onClick={() => setActive(page.id)}>
@@ -75,14 +73,14 @@ function Shell() {
       </button>)}</nav>
       <div className="sidebar-foot">
         <div className={`status ${online ? "" : "offline"}`}>{online ? <><Wifi size={15} /> {t("online")}</> : <><WifiOff size={15} /> {t("offlineSelling")}</>}</div>
-        <div className="me"><b>{staff.name}</b><small>{staff.roleLabel}</small></div>
+        <div className="me"><b>{staff.name}</b><small>{tx(staff.roleLabel)}</small></div>
         <div className="row">
           <button className="ghost" onClick={toggle} lang={lang === "ar" ? "en" : "ar"}>{t("language")}</button>
           <button className="ghost" onClick={logout}><LogOut size={16} /> {t("logout")}</button>
         </div>
       </div>
     </aside>
-    <main className="content" {...(current && !current.bilingual ? { dir: "rtl", lang: "ar" } : {})}>{Page ? <Page key={branchId} /> : <p className="muted center">{t("noSections")}</p>}</main>
+    <main className="content">{Page ? <Page key={branchId} /> : <p className="muted center">{t("noSections")}</p>}</main>
   </div>;
 }
 

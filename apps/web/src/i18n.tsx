@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import type { Product } from "@cooffeup/shared";
+import { formatSar, type Product } from "@cooffeup/shared";
+import { toEnglish } from "./labels";
 
 export type Language = "ar" | "en";
 
@@ -119,6 +120,12 @@ interface I18nValue {
   t(key: StringKey): string;
   productName(product: Pick<Product, "nameAr" | "nameEn">): string;
   toggle(): void;
+  /** Inline pair for screen text: the Arabic original and its English translation. */
+  L(ar: string, en: string): string;
+  /** Translates labels that arrive in Arabic from the API or shared package. */
+  tx(arabic: string): string;
+  sar(halalas: number): string;
+  dateTime(iso: string, options?: Intl.DateTimeFormatOptions): string;
 }
 
 const I18nContext = createContext<I18nValue | null>(null);
@@ -139,7 +146,12 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
     lang, dir: lang === "ar" ? "rtl" : "ltr", locale: lang === "ar" ? "ar-SA" : "en-SA",
     t: (key) => STRINGS[lang][key],
     productName: (product) => (lang === "en" && product.nameEn ? product.nameEn : product.nameAr),
-    toggle: () => setLang((value) => (value === "ar" ? "en" : "ar"))
+    toggle: () => setLang((value) => (value === "ar" ? "en" : "ar")),
+    L: (ar, en) => (lang === "ar" ? ar : en),
+    tx: (arabic) => (lang === "ar" ? arabic : toEnglish(arabic)),
+    sar: (halalas) => formatSar(halalas, lang === "ar" ? "ar-SA" : "en-SA"),
+    dateTime: (iso, options = { dateStyle: "medium", timeStyle: "short" }) =>
+      new Intl.DateTimeFormat(lang === "ar" ? "ar-SA" : "en-GB", { timeZone: "Asia/Riyadh", ...options }).format(new Date(iso))
   };
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }

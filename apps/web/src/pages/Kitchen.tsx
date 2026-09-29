@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { formatSar, TABLE_STATUS_LABELS, type KitchenStatus, type KitchenTicket, type TableStatus } from "@cooffeup/shared";
+import { TABLE_STATUS_LABELS, type KitchenStatus, type KitchenTicket, type TableStatus } from "@cooffeup/shared";
 import { Clock } from "lucide-react";
 import { api } from "../api";
 import { Notice, PageHeader, useAction, useLoad } from "../components";
+import { useI18n } from "../i18n";
 import { useSession } from "../session";
 
 interface TableView { id: string; label: string; area: string; seats: number; status: TableStatus; statusLabel: string; openTotal: number; orderCount: number; occupiedSince?: string }
@@ -16,6 +17,7 @@ const minutesSince = (iso: string) => Math.floor((Date.now() - new Date(iso).get
 
 export function Kitchen() {
   const { can, hasFeature } = useSession();
+  const { L, tx, sar } = useI18n();
   const [tick, setTick] = useState(0);
   const showKitchen = hasFeature("kitchen") && can("kitchen.view");
   const showTables = hasFeature("tables") && can("tables.manage");
@@ -35,32 +37,32 @@ export function Kitchen() {
 
   const areas = [...new Set((tables.data?.data ?? []).map((table) => table.area))];
   return <div className="page">
-    <PageHeader eyebrow="تحديث تلقائي كل بضع ثوانٍ" title="المطبخ والطاولات" />
+    <PageHeader eyebrow={L("تحديث تلقائي كل بضع ثوانٍ", "Refreshes automatically every few seconds")} title={L("المطبخ والطاولات", "Kitchen & tables")} />
     {action.message && <Notice tone={action.message.tone}>{action.message.text}</Notice>}
 
     {showKitchen && <>
-      <h2 className="section-title">شاشة المطبخ</h2>
-      <div className="kds">{(tickets.data?.data ?? []).length === 0 ? <p className="muted">لا توجد طلبات قيد التحضير</p> : tickets.data!.data.map((ticket) => {
+      <h2 className="section-title">{L("شاشة المطبخ", "Kitchen display")}</h2>
+      <div className="kds">{(tickets.data?.data ?? []).length === 0 ? <p className="muted">{L("لا توجد طلبات قيد التحضير", "Nothing to prepare")}</p> : tickets.data!.data.map((ticket) => {
         const age = minutesSince(ticket.createdAt);
         const next = NEXT[ticket.status];
         return <article key={ticket.id} className={`ticket ${ticket.status} ${age > 15 ? "late" : ""}`}>
-          <header><b>{ticket.receiptNumber}</b><span><Clock size={13} /> {age} د</span></header>
-          <small>{ticket.tableLabel ?? (ticket.orderType === "delivery" ? "توصيل" : "سفري")} · {ticket.statusLabel}</small>
+          <header><b>{ticket.receiptNumber}</b><span><Clock size={13} /> {age} {L("د", "min")}</span></header>
+          <small>{ticket.tableLabel ?? (ticket.orderType === "delivery" ? L("توصيل", "Delivery") : L("سفري", "Takeaway"))} · {tx(ticket.statusLabel)}</small>
           <ul>{ticket.items.map((item, index) => <li key={index}><b>{item.quantity}×</b> {item.name}{item.notes && <em>{item.notes}</em>}</li>)}</ul>
-          {next && <button className="primary small" disabled={action.busy} onClick={() => update(`/api/v1/kitchen/tickets/${ticket.id}`, next.status)}>{next.label}</button>}
+          {next && <button className="primary small" disabled={action.busy} onClick={() => update(`/api/v1/kitchen/tickets/${ticket.id}`, next.status)}>{tx(next.label)}</button>}
         </article>;
       })}</div>
     </>}
 
     {showTables && <>
-      <h2 className="section-title">الطاولات</h2>
+      <h2 className="section-title">{L("الطاولات", "Tables")}</h2>
       {areas.map((area) => <div key={area}>
         <h3 className="muted">{area}</h3>
         <div className="tables">{tables.data!.data.filter((table) => table.area === area).map((table) => <article key={table.id} className={`table-card ${table.status}`}>
-          <b>{table.label}</b><small>{table.seats} مقاعد · {table.statusLabel}</small>
-          {table.status === "occupied" && <small>{table.orderCount} طلبات · {formatSar(table.openTotal)}{table.occupiedSince && ` · منذ ${minutesSince(table.occupiedSince)} د`}</small>}
-          <select aria-label={`حالة ${table.label}`} value={table.status} onChange={(event) => update(`/api/v1/tables/${table.id}`, event.target.value)}>
-            {Object.entries(TABLE_STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          <b>{table.label}</b><small>{table.seats} {L("مقاعد", "seats")} · {tx(table.statusLabel)}</small>
+          {table.status === "occupied" && <small>{table.orderCount} {L("طلبات", "orders")} · {sar(table.openTotal)}{table.occupiedSince && ` · ${minutesSince(table.occupiedSince)} ${L("د", "min")}`}</small>}
+          <select aria-label={`${L("حالة", "Status of")} ${table.label}`} value={table.status} onChange={(event) => update(`/api/v1/tables/${table.id}`, event.target.value)}>
+            {Object.entries(TABLE_STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{tx(label)}</option>)}
           </select>
         </article>)}</div>
       </div>)}

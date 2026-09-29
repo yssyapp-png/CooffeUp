@@ -68,6 +68,8 @@ export interface PromotionSuggestion {
   code: string;
   titleAr: string;
   reasonAr: string;
+  titleEn: string;
+  reasonEn: string;
 }
 
 export function promotionSuggestions(insights: CustomerInsights): PromotionSuggestion[] {
@@ -75,28 +77,28 @@ export function promotionSuggestions(insights: CustomerInsights): PromotionSugge
   const favorite = insights.favoriteProducts[0];
   switch (insights.segment) {
     case "new":
-      suggestions.push({ code: "WELCOME_BACK", titleAr: "خصم 10% على الزيارة الثانية", reasonAr: "العميل زارك مرة واحدة فقط، شجّعه على العودة" });
+      suggestions.push({ code: "WELCOME_BACK", titleAr: "خصم 10% على الزيارة الثانية", reasonAr: "العميل زارك مرة واحدة فقط، شجّعه على العودة", titleEn: "10% off the second visit", reasonEn: "Has visited only once; encourage a return" });
       break;
     case "at_risk":
-      suggestions.push({ code: "WIN_BACK", titleAr: "عرض استرجاع: خصم 15% لمدة أسبوع", reasonAr: `لم يزرك منذ ${insights.daysSinceLastVisit} يومًا بعد أن كان يزورك بانتظام` });
+      suggestions.push({ code: "WIN_BACK", titleAr: "عرض استرجاع: خصم 15% لمدة أسبوع", reasonAr: `لم يزرك منذ ${insights.daysSinceLastVisit} يومًا بعد أن كان يزورك بانتظام`, titleEn: "Win-back: 15% off for a week", reasonEn: `No visit for ${insights.daysSinceLastVisit} days after visiting regularly` });
       break;
     case "lost":
-      suggestions.push({ code: "WE_MISS_YOU", titleAr: "رسالة \"اشتقنا لك\" مع مشروب مجاني", reasonAr: `آخر زيارة قبل ${insights.daysSinceLastVisit} يومًا` });
+      suggestions.push({ code: "WE_MISS_YOU", titleAr: "رسالة \"اشتقنا لك\" مع مشروب مجاني", reasonAr: `آخر زيارة قبل ${insights.daysSinceLastVisit} يومًا`, titleEn: "\"We miss you\" message with a free drink", reasonEn: `Last visit ${insights.daysSinceLastVisit} days ago` });
       break;
     case "vip":
-      suggestions.push({ code: "VIP_PERK", titleAr: "ترقية مجانية للحجم أو إضافة مجانية", reasonAr: "من أعلى العملاء إنفاقًا وتكرارًا للزيارة" });
+      suggestions.push({ code: "VIP_PERK", titleAr: "ترقية مجانية للحجم أو إضافة مجانية", reasonAr: "من أعلى العملاء إنفاقًا وتكرارًا للزيارة", titleEn: "Free size upgrade or extra", reasonEn: "One of the highest-spending, most frequent customers" });
       break;
     case "loyal":
-      suggestions.push({ code: "LOYALTY_STAMP", titleAr: "بطاقة ولاء: المشروب العاشر مجانًا", reasonAr: `يزورك كل ${insights.averageDaysBetweenVisits ?? "بضعة"} أيام تقريبًا` });
+      suggestions.push({ code: "LOYALTY_STAMP", titleAr: "بطاقة ولاء: المشروب العاشر مجانًا", reasonAr: `يزورك كل ${insights.averageDaysBetweenVisits ?? "بضعة"} أيام تقريبًا`, titleEn: "Loyalty card: 10th drink free", reasonEn: `Visits about every ${insights.averageDaysBetweenVisits ?? "few"} days` });
       break;
     case "regular":
       break;
   }
   if (favorite && favorite.quantity >= 3) {
-    suggestions.push({ code: "FAVORITE_BUNDLE", titleAr: `عرض باقة مع ${favorite.name}`, reasonAr: `اشترى ${favorite.name} ${favorite.quantity} مرات` });
+    suggestions.push({ code: "FAVORITE_BUNDLE", titleAr: `عرض باقة مع ${favorite.name}`, reasonAr: `اشترى ${favorite.name} ${favorite.quantity} مرات`, titleEn: `Bundle offer with ${favorite.name}`, reasonEn: `Bought ${favorite.name} ${favorite.quantity} times` });
   }
   if (insights.visits >= 3 && insights.averageTicket < 2_500) {
-    suggestions.push({ code: "UPSELL_SNACK", titleAr: "اقتراح إضافة مخبوزات مع الطلب", reasonAr: "متوسط فاتورته منخفض رغم تكرار الزيارة" });
+    suggestions.push({ code: "UPSELL_SNACK", titleAr: "اقتراح إضافة مخبوزات مع الطلب", reasonAr: "متوسط فاتورته منخفض رغم تكرار الزيارة", titleEn: "Suggest adding a pastry", reasonEn: "Low average ticket despite frequent visits" });
   }
   return suggestions;
 }

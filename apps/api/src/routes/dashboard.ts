@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { DELIVERY_PLATFORMS, riyadhDate, type PaymentMethod, type SalesChannel } from "@cooffeup/shared";
+import { riyadhDate, type PaymentMethod, type SalesChannel } from "@cooffeup/shared";
 import { actor, guarded, type AppContext } from "../context.js";
 import { branchIsOpen } from "../services/orders.js";
 import { MAIN_BRANCH_ID } from "../store.js";
@@ -59,7 +59,7 @@ export function registerDashboardRoutes(app: FastifyInstance, ctx: AppContext) {
         byChannel, byPayment, week, branches, lowStock,
         waiting: {
           platformOrders: externalWaiting.length,
-          platforms: [...new Set(externalWaiting.map((order) => DELIVERY_PLATFORMS[order.platform].nameAr))],
+          platforms: [...new Set(externalWaiting.map((order) => order.platform))],
           kitchen: [...store.kitchenTickets.values()].filter((ticket) => inScope(ticket.branchId) && (ticket.status === "new" || ticket.status === "preparing")).length,
           pickups: [...store.pickupTickets.values()].filter((ticket) => inScope(ticket.branchId) && ticket.status !== "collected").length
         },
