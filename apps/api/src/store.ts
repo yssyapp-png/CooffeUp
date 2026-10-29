@@ -4,9 +4,9 @@ export interface StoredOrder {
   id: string;
   receiptNumber: string;
   type: OrderType;
-  status: "paid";
+  status: "pending_payment" | "paid" | "payment_failed";
   lines: Array<{ productId: string; quantity: number; unitPrice: number; name: string }>;
-  payments: Array<{ method: PaymentMethod; amount: number }>;
+  payments: Array<{ method: PaymentMethod; amount: number; provider?: "moyasar"; reference?: string }>;
   totals: Totals;
   createdAt: string;
 }

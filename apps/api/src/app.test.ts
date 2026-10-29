@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "./app.js";
 
 process.env.NODE_ENV = "test";
-const app = await buildApp();
+const app = await buildApp({moyasar:null,skyline:null});
 beforeAll(() => app.ready());
 afterAll(() => app.close());
 

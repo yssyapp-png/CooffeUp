@@ -14,6 +14,10 @@ npm run dev
 - API: `http://localhost:4000`
 - فحص الصحة: `http://localhost:4000/health`
 
+## الدفع الإلكتروني
+
+الدفع عبر ميسر والربط مع سكاي لاين: راجع [docs/PAYMENTS.md](docs/PAYMENTS.md).
+
 ## الجودة
 
 ```bash

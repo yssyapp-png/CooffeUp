@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { calculateTotals, formatSar, type Product } from "@cooffeup/shared";
-import { Coffee, Minus, Plus, Search, ShoppingBag, Trash2, Wifi } from "lucide-react";
+import { Coffee, CreditCard, Minus, Plus, Search, ShoppingBag, Trash2, Wifi } from "lucide-react";
+import { MoyasarDialog } from "./payments/MoyasarDialog";
+import type { MoyasarCheckout } from "./payments/moyasar";
 
 type CartItem = Product & { quantity: number };
 const API = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
@@ -11,6 +13,7 @@ export function App() {
   const [query,setQuery] = useState("");
   const [busy,setBusy] = useState(false);
   const [message,setMessage] = useState("");
+  const [online,setOnline] = useState<MoyasarCheckout>();
   useEffect(() => { fetch(`${API}/api/v1/products`).then(r=>r.json()).then(r=>setProducts(r.data)).catch(()=>setMessage("تعذر الاتصال بالخادم")); }, []);
   const visible = products.filter(p => `${p.nameAr} ${p.nameEn} ${p.sku}`.toLowerCase().includes(query.toLowerCase()));
   const totals = useMemo(() => calculateTotals(cart.map(p=>({productId:p.id,name:p.nameAr,unitPrice:p.price,quantity:p.quantity,taxRateBps:p.taxRateBps}))),[cart]);
@@ -26,7 +29,18 @@ export function App() {
       setMessage(`تم الدفع — الإيصال ${body.data.receiptNumber}`); setCart([]);
     } catch (error) { setMessage(error instanceof Error ? error.message : "حدث خطأ"); } finally { setBusy(false); }
   }
+  async function checkoutOnline() {
+    if (!cart.length || busy) return;
+    setBusy(true); setMessage("");
+    try {
+      const response = await fetch(`${API}/api/v1/payments/moyasar/checkout`,{method:"POST",headers:{"content-type":"application/json","idempotency-key":crypto.randomUUID()},body:JSON.stringify({type:"takeaway",lines:cart.map(p=>({productId:p.id,quantity:p.quantity}))})});
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error === "MOYASAR_NOT_CONFIGURED" ? "الدفع الإلكتروني غير مفعّل" : body.error ?? "تعذر بدء الدفع");
+      setOnline(body.data);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "حدث خطأ"); } finally { setBusy(false); }
+  }
   return <div className="shell">
+    {online&&<MoyasarDialog checkout={online} onClose={()=>setOnline(undefined)}/>}
     <header><div className="brand"><span><Coffee size={22}/></span><div><b>CooffeUp</b><small>نقطة البيع</small></div></div><div className="status"><Wifi size={16}/> النظام متصل وآمن</div><button className="cashier">عبدالله · كاشير</button></header>
     <main>
       <section className="catalog">
@@ -43,6 +57,7 @@ export function App() {
         <div className="summary"><p><span>المجموع قبل الضريبة</span><b>{formatSar(totals.taxable)}</b></p><p><span>ضريبة القيمة المضافة (15%)</span><b>{formatSar(totals.tax)}</b></p><div><span>الإجمالي</span><strong>{formatSar(totals.total)}</strong></div></div>
         {message&&<div className="message" role="status">{message}</div>}
         <button className="pay" onClick={checkout} disabled={!cart.length||busy}>{busy?"جارٍ تنفيذ الدفع...":`دفع ${formatSar(totals.total)}`}</button>
+        <button className="pay-online" onClick={checkoutOnline} disabled={!cart.length||busy}><CreditCard size={18}/> دفع إلكتروني عبر ميسر</button>
       </aside>
     </main>
   </div>;
